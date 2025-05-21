@@ -5,6 +5,8 @@ package com.alibaba.mnnllm.android.modelist
 import android.text.TextUtils
 import android.view.LayoutInflater
 import android.view.ViewGroup
+import com.alibaba.mnnllm.android.modelist.DownloadState
+import com.alibaba.mnnllm.android.modelist.Modality
 import androidx.recyclerview.widget.RecyclerView
 import com.alibaba.mls.api.ModelItem
 import com.alibaba.mls.api.download.DownloadInfo
@@ -18,8 +20,9 @@ class ModelListAdapter(private val items: MutableList<ModelItem>) :
     private var modelListListener: ModelItemListener? = null
     private var modelItemDownloadStatesMap: Map<String, ModelItemDownloadState>? = null
     private val modelItemHolders: MutableSet<ModelItemHolder> = HashSet()
-    private var filterQuery: String? = null
-    private var filterDownloaded = false
+    private var filterQuery: String = ""
+    private var currentDownloadState: DownloadState = DownloadState.ALL
+    private var currentModality: Modality = Modality.ALL
 
     fun setModelListListener(modelListListener: ModelItemListener?) {
         this.modelListListener = modelListListener
@@ -52,7 +55,8 @@ class ModelListAdapter(private val items: MutableList<ModelItem>) :
         this.modelItemDownloadStatesMap = modelItemDownloadStatesMap
         items.clear()
         items.addAll(hfModelItems)
-        filter(filterQuery!!, filterDownloaded)
+        // Apply current filters to the new list
+        filter(this.filterQuery, this.currentDownloadState, this.currentModality)
     }
 
     fun updateItem(modelId: String) {
@@ -85,42 +89,65 @@ class ModelListAdapter(private val items: MutableList<ModelItem>) :
         return if (filteredItems != null) filteredItems!! else items
     }
 
-    private fun filter(query: String, showDownloadedOnly: Boolean) {
-        val filtered = items.stream()
+    private fun filter(query: String, downloadState: DownloadState, modality: Modality) {
+        val lowerCaseQuery = query.lowercase(Locale.getDefault())
+
+        val result = items.stream()
             .filter { hfModelItem: ModelItem ->
-                if (showDownloadedOnly) {
-                    val modelItemState = modelItemDownloadStatesMap!![hfModelItem.modelId]
-                    if (modelItemState != null && modelItemState.downloadInfo!!.downlodaState != DownloadInfo.DownloadSate.COMPLETED) {
-                        return@filter false
+                // Download State Filter
+                val downloadMatch = when (downloadState) {
+                    DownloadState.DOWNLOADING -> {
+                        val modelState = modelItemDownloadStatesMap?.get(hfModelItem.modelId)
+                        modelState?.downloadInfo?.downlodaState == DownloadInfo.DownloadSate.DOWNLOADING
                     }
+                    DownloadState.DOWNLOADED -> {
+                        val modelState = modelItemDownloadStatesMap?.get(hfModelItem.modelId)
+                        modelState?.downloadInfo?.downlodaState == DownloadInfo.DownloadSate.COMPLETED
+                    }
+                    DownloadState.NOT_DOWNLOADED -> {
+                        val modelState = modelItemDownloadStatesMap?.get(hfModelItem.modelId)
+                        val state = modelState?.downloadInfo?.downlodaState
+                        state == null || state == DownloadInfo.DownloadSate.NONE || state == DownloadInfo.DownloadSate.FAILED
+                    }
+                    DownloadState.ALL -> true
                 }
+                if (!downloadMatch) return@filter false
+
+                // Modality Filter
+                val modalityMatch = when (modality) {
+                    Modality.MULTIMODAL -> hfModelItem.isMultimodal
+                    Modality.NON_MULTIMODAL -> !hfModelItem.isMultimodal
+                    Modality.ALL -> true
+                }
+                if (!modalityMatch) return@filter false
+
+                // Search Query Filter
+                if (lowerCaseQuery.isEmpty()) return@filter true
                 val modelName = hfModelItem.modelName!!.lowercase(Locale.getDefault())
-                modelName.contains(query.lowercase(Locale.getDefault())) ||
+                modelName.contains(lowerCaseQuery) ||
                         hfModelItem.newTags.stream().anyMatch { tag: String ->
-                            tag.lowercase(Locale.getDefault()).contains(
-                                query.lowercase(
-                                    Locale.getDefault()
-                                )
-                            )
+                            tag.lowercase(Locale.getDefault()).contains(lowerCaseQuery)
                         }
             }
             .collect(Collectors.toList())
-        if (filtered.size != items.size) {
-            this.filteredItems = filtered
-        } else {
+
+        if (query.isEmpty() && downloadState == DownloadState.ALL && modality == Modality.ALL) {
             this.filteredItems = null
+        } else {
+            this.filteredItems = result
         }
         notifyDataSetChanged()
     }
 
     fun unfilter() {
-        this.filteredItems = null
-        notifyDataSetChanged()
+        this.filterQuery = "" // Clear only the text query
+        filter(this.filterQuery, this.currentDownloadState, this.currentModality) // Re-apply with current dropdown filters
     }
 
-    fun setFilter(filterQuery: String, filterDownloaded: Boolean) {
+    fun setFilter(filterQuery: String, downloadState: DownloadState, modality: Modality) {
         this.filterQuery = filterQuery
-        this.filterDownloaded = filterDownloaded
-        filter(filterQuery, filterDownloaded)
+        this.currentDownloadState = downloadState
+        this.currentModality = modality
+        filter(this.filterQuery, this.currentDownloadState, this.currentModality)
     }
 }

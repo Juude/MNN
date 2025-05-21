@@ -7,12 +7,20 @@
         android:icon="@drawable/baseline_search_24"
         app:actionViewClass="androidx.appcompat.widget.SearchView"
         app:showAsAction="ifRoom|collapseActionView" />
+
     <item
-        android:id="@+id/action_filter_downloaded"
-        android:title="@string/show_only_downloaded"
-        android:checkable="true"
-        android:checked="false"
-        app:showAsAction="never" />
+        android:id="@+id/action_trigger_filter_download_state"
+        android:title="@string/filter_download_state"
+        android:icon="@drawable/download"
+        android:iconTint="?attr/colorControlNormal"
+        app:showAsAction="ifRoom" />
+
+    <item
+        android:id="@+id/action_trigger_filter_modality"
+        android:title="@string/filter_modality"
+        android:icon="@android:drawable/ic_menu_view"
+        android:iconTint="?attr/colorControlNormal"
+        app:showAsAction="ifRoom" />
 
     <item
         android:id="@+id/action_github_issue"

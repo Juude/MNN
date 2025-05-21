@@ -102,4 +102,15 @@
     <string name="audio_output_confirm">Audio Output is very slow for now, Would you like to continue anyway?</string>
     <string name="confirm_delete_model_title">Confirm Deletion</string>
     <string name="confirm_delete_model_message">Are you sure you want to delete this model? This action cannot be undone.</string>
+
+    <string name="filter_download_state">Download State</string>
+    <string name="filter_download_state_all">All</string>
+    <string name="filter_download_state_downloading">Downloading</string>
+    <string name="filter_download_state_downloaded">Downloaded</string>
+    <string name="filter_download_state_not_downloaded">Not Downloaded</string>
+
+    <string name="filter_modality">Modality</string>
+    <string name="filter_modality_all">All</string>
+    <string name="filter_modality_multimodal">Multimodal</string>
+    <string name="filter_modality_non_multimodal">Non-Multimodal</string>
 </resources>

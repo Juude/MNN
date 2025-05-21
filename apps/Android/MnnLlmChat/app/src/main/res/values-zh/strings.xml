@@ -102,4 +102,15 @@
     <string name="audio_output_confirm">当前音频输出可能较慢。您是否仍要打开？</string>
     <string name="confirm_delete_model_title">确认删除</string>
     <string name="confirm_delete_model_message">您确定要删除这个模型吗？此操作无法恢复。</string>
+
+    <string name="filter_download_state">下载状态</string>
+    <string name="filter_download_state_all">全部</string>
+    <string name="filter_download_state_downloading">下载中</string>
+    <string name="filter_download_state_downloaded">已下载</string>
+    <string name="filter_download_state_not_downloaded">未下载</string>
+
+    <string name="filter_modality">模型类型</string>
+    <string name="filter_modality_all">全部</string>
+    <string name="filter_modality_multimodal">多模态</string>
+    <string name="filter_modality_non_multimodal">非多模态</string>
 </resources>
