@@ -11,6 +11,7 @@ import androidx.recyclerview.widget.RecyclerView
 import com.alibaba.mls.api.ModelItem
 import com.alibaba.mls.api.download.DownloadInfo
 import com.alibaba.mnnllm.android.R
+import com.alibaba.mnnllm.android.utils.ModelUtils // Added import
 import java.util.Locale
 import java.util.stream.Collectors
 
@@ -20,9 +21,9 @@ class ModelListAdapter(private val items: MutableList<ModelItem>) :
     private var modelListListener: ModelItemListener? = null
     private var modelItemDownloadStatesMap: Map<String, ModelItemDownloadState>? = null
     private val modelItemHolders: MutableSet<ModelItemHolder> = HashSet()
-    private var filterQuery: String = ""
-    private var currentDownloadState: DownloadState = DownloadState.ALL
-    private var currentModality: Modality = Modality.ALL
+    internal var filterQuery: String = ""
+    internal var currentDownloadState: DownloadState = DownloadState.ALL
+    internal var currentModality: Modality = Modality.ALL
 
     fun setModelListListener(modelListListener: ModelItemListener?) {
         this.modelListListener = modelListListener
@@ -115,8 +116,8 @@ class ModelListAdapter(private val items: MutableList<ModelItem>) :
 
                 // Modality Filter
                 val modalityMatch = when (modality) {
-                    Modality.MULTIMODAL -> hfModelItem.isMultimodal
-                    Modality.NON_MULTIMODAL -> !hfModelItem.isMultimodal
+                    Modality.MULTIMODAL -> ModelUtils.isMultiModalModel(hfModelItem)
+                    Modality.NON_MULTIMODAL -> !ModelUtils.isMultiModalModel(hfModelItem)
                     Modality.ALL -> true
                 }
                 if (!modalityMatch) return@filter false
@@ -150,4 +151,7 @@ class ModelListAdapter(private val items: MutableList<ModelItem>) :
         this.currentModality = modality
         filter(this.filterQuery, this.currentDownloadState, this.currentModality)
     }
+
+    // Add this method inside ModelListAdapter class
+    fun getItemsForTest(): List<ModelItem> = if (filteredItems != null) filteredItems!! else items
 }
