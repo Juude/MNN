@@ -40,7 +40,7 @@ class ModelListPresenter(private val context: Context, private val view: ModelLi
     private var networkErrorCount = 0
     private val modelDownloadManager: ModelDownloadManager =
         ModelDownloadManager.getInstance(this.context)
-    private var mainHandler: Handler?
+    internal var mainHandler: Handler? // Changed to internal var for testing
 
     init {
         modelDownloadManager.setListener(this)
@@ -143,7 +143,7 @@ class ModelListPresenter(private val context: Context, private val view: ModelLi
     }
 
 
-    private fun onListAvailable(hfModelItems: List<ModelItem>, onSuccess: Runnable?) {
+    internal fun onListAvailable(hfModelItems: List<ModelItem>, onSuccess: Runnable?) { // Changed to internal for testing
         val hfRepoItemsProcessed = processList(hfModelItems)
         for (item in hfModelItems) {
             modelDownloadManager.getDownloadInfo(item.modelId!!)
