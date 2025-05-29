@@ -28,11 +28,15 @@ if (MNN_SEP_BUILD)
         target_link_libraries(llm ${LLM_DEPS})
     else()
         add_library(llm STATIC ${SRCS})
+        # For static lib, OpenCV_LIBS should be PUBLIC so that executables linking llm also link to OpenCV
+        target_link_libraries(llm PUBLIC ${OpenCV_LIBS})
     endif()
     list(APPEND LLM_DEPS llm)
 else()
     add_library(llm OBJECT ${SRCS})
 endif()
+
+find_package(OpenCV REQUIRED)
 
 if (LLM_SUPPORT_VISION AND MNN_BUILD_OPENCV)
     target_compile_definitions(llm PRIVATE LLM_SUPPORT_VISION)
@@ -45,10 +49,10 @@ add_executable(llm_demo ${CMAKE_CURRENT_LIST_DIR}/demo/llm_demo.cpp)
 add_executable(embedding_demo ${CMAKE_CURRENT_LIST_DIR}/demo/embedding_demo.cpp)
 add_executable(rollback_demo ${CMAKE_CURRENT_LIST_DIR}/demo/rollback_demo.cpp)
 add_executable(llm_bench ${CMAKE_CURRENT_LIST_DIR}/demo/llm_bench.cpp)
-target_link_libraries(llm_demo ${LLM_DEPS})
-target_link_libraries(embedding_demo ${LLM_DEPS})
-target_link_libraries(rollback_demo ${LLM_DEPS})
-target_link_libraries(llm_bench ${LLM_DEPS})
+target_link_libraries(llm_demo ${LLM_DEPS} ${OpenCV_LIBS})
+target_link_libraries(embedding_demo ${LLM_DEPS} ${OpenCV_LIBS})
+target_link_libraries(rollback_demo ${LLM_DEPS} ${OpenCV_LIBS})
+target_link_libraries(llm_bench ${LLM_DEPS} ${OpenCV_LIBS})
 
 if (BUILD_MLS)
 set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING "Minimum macOS version" FORCE)
@@ -105,6 +109,37 @@ target_include_directories(mls PRIVATE ${MNN_INCLUDES} ${CMAKE_CURRENT_LIST_DIR}
 set_property(TARGET mls PROPERTY CXX_STANDARD 17)
 set_property(TARGET mls PROPERTY CXX_STANDARD_REQUIRED ON)
 # target_compile_options(mls PRIVATE -std=c++17)
-target_link_libraries(mls PRIVATE ${LLM_DEPS})
+target_link_libraries(mls PRIVATE ${LLM_DEPS} ${OpenCV_LIBS})
 target_compile_definitions(mls PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT)
+endif()
+
+# Unit Tests
+# GTest should ideally be found by a higher-level CMakeLists.txt
+# If not, uncomment and adjust the following:
+# find_package(GTest REQUIRED)
+
+if(TARGET GTest::gtest AND TARGET GTest::gtest_main)
+    # Add definition for LLM_SUPPORT_VIDEO for the tests if it's globally ON
+    # This ensures test code matching #ifdef LLM_SUPPORT_VIDEO compiles as expected.
+    # Alternatively, could add this directly to video_test if it's the only one needing it.
+    if(LLM_SUPPORT_VIDEO)
+        add_definitions(-DLLM_SUPPORT_VIDEO)
+    endif()
+
+    # Video processing test
+    add_executable(video_test ${CMAKE_CURRENT_LIST_DIR}/test/video_test.cpp)
+    target_link_libraries(video_test PRIVATE
+        llm # The library built in this project
+        ${LLM_DEPS} # Dependencies of llm, including MNN
+        ${OpenCV_LIBS} # OpenCV
+        GTest::gtest
+        GTest::gtest_main
+    )
+    # Ensure the test can find its data files by setting a working directory if run via CTest
+    # For direct execution, users need to run from a path where test_data/sample_video.mp4 is accessible.
+    # Example for CTest:
+    # set_property(TEST video_test PROPERTY WORKING_DIRECTORY ${CMAKE_CURRENT_LIST_DIR}/test)
+    # add_test(NAME VideoTest COMMAND video_test)
+else()
+    message(WARNING "GTest not found, video_test will not be built.")
 endif()

@@ -120,6 +120,7 @@ private:
     std::vector<int> multimodeProcess(const std::string& mode, std::string info);
     std::vector<int> visionProcess(const std::string& file);
     std::vector<int> audioProcess(const std::string& file);
+    std::vector<int> videoProcess(const std::string& file);
     std::shared_ptr<Module> mVisionModule, mAudioModule;
     std::vector<VARP> mVisionEmbeddings, mAudioEmbeddings;
     std::shared_ptr<Talker> mTalker;

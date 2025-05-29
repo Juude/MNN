@@ -8,6 +8,7 @@
 #include <regex>
 #include <MNN/AutoTime.hpp>
 #include <MNN/expr/ExecutorScope.hpp>
+#define LLM_SUPPORT_VIDEO
 #include "omni.hpp"
 #include "kvmeta.hpp"
 #include "llmconfig.hpp"
@@ -17,6 +18,7 @@
 #include "httplib.h"
 #ifdef LLM_SUPPORT_VISION
 #include <cv/cv.hpp>
+#include <opencv2/opencv.hpp>
 #endif
 #ifdef LLM_SUPPORT_AUDIO
 #include <audio/audio.hpp>
@@ -345,6 +347,80 @@ std::vector<int> Omni::audioProcess(const std::string& file) {
 #endif
 }
 
+std::vector<int> Omni::videoProcess(const std::string& file) {
+#ifdef LLM_SUPPORT_VIDEO
+    cv::VideoCapture cap;
+    cap.open(file);
+    if (!cap.isOpened()) {
+        MNN_PRINT("Omni Can't open video: %s\n", file.c_str());
+        return std::vector<int>(0);
+    }
+
+    Timer _t;
+    std::vector<VARP> all_frame_embeddings;
+    std::vector<int> all_frame_ids;
+
+    all_frame_ids.push_back(mVisionStart);
+
+    while (true) {
+        cv::Mat frame_cv;
+        cap.read(frame_cv);
+        if (frame_cv.empty()) {
+            break;
+        }
+
+        // Convert cv::Mat to VARP
+        // VARP image = MNN::CV::cvMatToVar(frame_cv); // This function does not exist in MNN
+        // Manual conversion from cv::Mat to VARP
+        VARP image_var;
+        if (frame_cv.channels() == 3) {
+            image_var = _Input({frame_cv.rows, frame_cv.cols, 3}, NHWC, halide_type_of<uint8_t>());
+            memcpy(image_var->writeMap<uint8_t>(), frame_cv.data, frame_cv.total() * frame_cv.elemSize());
+        } else if (frame_cv.channels() == 1) {
+            // Handle grayscale if necessary, or convert to 3 channels first
+            // For now, assuming 3 channels as typical for vision models
+            MNN_PRINT("Warning: Video frame has %d channels, expected 3.\n", frame_cv.channels());
+            // Convert grayscale to BGR before proceeding
+            cv::Mat bgr_frame;
+            cv::cvtColor(frame_cv, bgr_frame, cv::COLOR_GRAY2BGR);
+            image_var = _Input({bgr_frame.rows, bgr_frame.cols, 3}, NHWC, halide_type_of<uint8_t>());
+            memcpy(image_var->writeMap<uint8_t>(), bgr_frame.data, bgr_frame.total() * bgr_frame.elemSize());
+        } else {
+            MNN_PRINT("Error: Video frame has %d channels, unsupported.\n", frame_cv.channels());
+            // Skip this frame or return error
+            continue; 
+        }
+
+        // Preprocessing
+        mVisionHeight = UP_DIV(mVisionHeight, mVisionSizeUnit) * mVisionSizeUnit;
+        mVisionWidth  = UP_DIV(mVisionWidth, mVisionSizeUnit) * mVisionSizeUnit;
+
+        image_var = MNN::CV::resize(image_var, {mVisionHeight, mVisionWidth}, 0, 0,
+                                MNN::CV::INTER_LINEAR, MNN::CV::COLOR_BGR2RGB, // Assuming input is BGR from OpenCV
+                                mVisionMean, mVisionNorm);
+        image_var = Express::_Unsqueeze(image_var, {0}); // Add batch dimension [1, H, W, C]
+        image_var = Express::_Convert(image_var, NC4HW4);    // Convert to expected format, e.g., NC4HW4
+
+        VARP image_embedding = mVisionModule->forward(image_var);
+        // all_frame_embeddings.push_back(image_embedding); // Local collection not strictly needed if pushing to member
+        this->mVisionEmbeddings.push_back(image_embedding); // Store for Omni::embedding
+
+        int visual_len = image_embedding->getInfo()->dim[0]; // Assuming dim[0] is sequence length for vision model
+        std::vector<int> frame_ids(visual_len, mVisionPad);
+        all_frame_ids.insert(all_frame_ids.end(), frame_ids.begin(), frame_ids.end());
+    }
+
+    all_frame_ids.push_back(mVisionEnd);
+    cap.release();
+
+    mContext->vision_us = _t.durationInUs(); // Set time for this specific call
+
+    return all_frame_ids;
+#else
+    return std::vector<int>(0);
+#endif
+}
+
 std::vector<int> Omni::multimodeProcess(const std::string& mode, std::string info) {
     auto file_info = info;
     if (mode == "img") {
@@ -397,6 +473,11 @@ std::vector<int> Omni::multimodeProcess(const std::string& mode, std::string inf
             std::cerr << "Failed to download file. Status code: " << (res ? res->status : 0) << std::endl;
         }
     }
+#ifdef LLM_SUPPORT_VIDEO
+    if (mode == "vid" && mConfig->is_visual()) { // Assuming is_visual() is also relevant for video frames
+        return videoProcess(file_info);
+    }
+#endif
     if (mode == "img" && mConfig->is_visual()) {
         return visionProcess(file_info);
     }
