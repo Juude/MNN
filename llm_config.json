@@ -1,0 +1,14 @@
+{
+    "llm_model": "llm.mnn",
+    "llm_weight": "llm.mnn.weight",
+    "backend_type": "cpu",
+    "thread_num": 1,
+    "precision": "low",
+    "memory": "low",
+    "power":"low",
+    "use_mmap":"false",
+    "is_batch_quant": 0,
+    "reuse_kv": false,
+    "quant_kv": 0,
+    "kvcache_limit": 0
+}
