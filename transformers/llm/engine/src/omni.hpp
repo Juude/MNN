@@ -119,6 +119,8 @@ private:
     std::vector<float> mVisionNorm{0.01459843, 0.01500777, 0.01422007};
     std::vector<int> multimodeProcess(const std::string& mode, std::string info);
     std::vector<int> visionProcess(const std::string& file);
+    std::vector<int> visionProcess(VARP image);
+    std::vector<int> videoProcess(const std::string& file);
     std::vector<int> audioProcess(const std::string& file);
     std::shared_ptr<Module> mVisionModule, mAudioModule;
     std::vector<VARP> mVisionEmbeddings, mAudioEmbeddings;
