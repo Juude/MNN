@@ -1,0 +1,6 @@
+include ':mnn_tts'
+include ':app'
+
+project(':mnn_tts').projectDir = new File(rootDir, '../../android')
+
+rootProject.name = "MNNTTSDemo" 
