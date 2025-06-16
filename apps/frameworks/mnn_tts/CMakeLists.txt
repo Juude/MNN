@@ -1,31 +1,89 @@
-cmake_minimum_required(VERSION 3.10)
-project(mnn_tts LANGUAGES C CXX)
+cmake_minimum_required(VERSION 3.13)
 
-add_library(mnn_tts SHARED
-    src/common.cpp
+project(mnn_tts VERSION 1.0.0)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+option(BUILD_BERTVITS2 "Build BertVit2 TTS " ON)
+option(BUILD_PIPER "Build PIPER TTS " OFF)
+option(BUILD_ANDROID "Build for Android" OFF)
+
+if(ANDROID)
+    set(BUILD_ANDROID ON CACHE BOOL "Build for Android" FORCE)
+endif()
+
+add_library(MNN
+        SHARED
+        IMPORTED)
+set(MNN_SOURCE_ROOT ${CMAKE_CURRENT_LIST_DIR}/../../../)
+set(MNN_INSTALL_ROOT "${MNN_SOURCE_ROOT}/project/android/build_64")
+set(LIB_PATH "${MNN_INSTALL_ROOT}/lib")
+message(STATUS "MNN_SOURCE_ROOT: ${MNN_SOURCE_ROOT}")
+message(STATUS "LIB_PATH: ${LIB_PATH}")
+
+set_target_properties(MNN PROPERTIES INTERFACE_INCLUDE_DIRECTORIES
+        "${MNN_SOURCE_ROOT}/include;${MNN_SOURCE_ROOT}/tools/audio/include/;${MNN_SOURCE_ROOT}/transformers/llm/engine/include"
+)
+set_target_properties(MNN PROPERTIES IMPORTED_LOCATION "${LIB_PATH}/libMNN.so")
+
+include_directories(
+	${CMAKE_CURRENT_LIST_DIR}/include
+	${CMAKE_CURRENT_LIST_DIR}/../3rd_party/include
 )
 
-target_include_directories(mnn_tts PUBLIC include)
-set_target_properties(mnn_tts PROPERTIES POSITION_INDEPENDENT_CODE ON)
-
-if(ANDROID)
-    target_sources(mnn_tts PRIVATE src/android/android_jni.cpp)
-elseif(APPLE)
-    target_sources(mnn_tts PRIVATE src/ios/ios.mm)
-else()
-    target_sources(mnn_tts PRIVATE src/desktop/desktop.cpp)
+if(BUILD_BERTVITS2)
+  include_directories(
+  	${CMAKE_CURRENT_LIST_DIR}/include/bertvits2
+  )
 endif()
 
-# Tests
-enable_testing()
-add_executable(mnn_tts_tests tests/test_main.cpp)
-target_link_libraries(mnn_tts_tests mnn_tts)
-add_test(NAME mnn_tts_run COMMAND mnn_tts_tests)
-
-if(ANDROID)
-    add_custom_target(run_android_tests
-        COMMAND adb push $<TARGET_FILE:mnn_tts_tests> /data/local/tmp
-        COMMAND adb shell /data/local/tmp/mnn_tts_tests
-        DEPENDS mnn_tts_tests
-        )
+if(BUILD_PIPER)
+  include_directories(
+  	${CMAKE_CURRENT_LIST_DIR}/include/piper
+    ${CMAKE_CURRENT_LIST_DIR}/third_party/piper/espeak-ng/src/include/espeak-ng/
+  )
 endif()
+
+set(SHARED_SOURCE_FILES
+  ${CMAKE_CURRENT_LIST_DIR}/src/mnn_tts_config.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/src/mnn_tts_sdk.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/src/mnn_tts_logger.cpp
+)
+
+set(BERTVITS2_SOURCE_FILES
+  ${CMAKE_CURRENT_LIST_DIR}/src/bertvits2/an_to_cn.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/src/bertvits2/utils.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/src/bertvits2/mnn_bertvits2_tts_impl.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/src/bertvits2/text_preprocessor.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/src/bertvits2/pinyin.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/src/bertvits2/chinese_g2p.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/src/bertvits2/chinese_bert.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/src/bertvits2/english_bert.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/src/bertvits2/english_g2p.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/src/bertvits2/tone_adjuster.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/src/bertvits2/tts_generator.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/src/bertvits2/word_spliter.cpp
+)
+
+if(BUILD_PIPER)
+  set(PIPER_SOURCE_FILES
+    ${CMAKE_CURRENT_LIST_DIR}/src/piper/audio_generator.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/src/piper/mnn_piper_tts_impl.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/src/piper/phoneme_ids.cpp
+  )
+endif()
+
+if(BUILD_ANDROID)
+  set(ANDROID_SOURCE_FILES
+    ${CMAKE_CURRENT_LIST_DIR}/src/android/tts_service.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/src/android/tts_service_jni.cpp
+  )
+endif()
+
+if(BUILD_PIPER)
+  add_subdirectory(third_party/piper/espeak-ng)
+endif()
+
+add_library(${PROJECT_NAME} SHARED ${PIPER_SOURCE_FILES} ${BERTVITS2_SOURCE_FILES} ${SHARED_SOURCE_FILES} ${ANDROID_SOURCE_FILES})
+target_link_libraries(${PROJECT_NAME} log MNN ) 
