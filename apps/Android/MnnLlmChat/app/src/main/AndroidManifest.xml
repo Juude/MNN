@@ -97,6 +97,12 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".debug.DebugActivity"
+            android:exported="false"
+            android:label="@string/debug_activity_title"
+            android:theme="@style/AppTheme" />
+
         <service
             android:name="com.alibaba.mnnllm.api.openai.service.OpenAIService"
             android:enabled="true"

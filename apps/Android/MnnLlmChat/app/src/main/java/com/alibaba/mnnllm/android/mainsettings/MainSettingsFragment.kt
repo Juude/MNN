@@ -2,13 +2,17 @@
 // Copyright (c) 2024 Alibaba Group Holding Limited All rights reserved.
 
 package com.alibaba.mnnllm.android.mainsettings
+import android.content.Intent
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.widget.Toast
 import androidx.preference.ListPreference
 import androidx.preference.Preference
 import androidx.preference.PreferenceFragmentCompat
 import com.alibaba.mnnllm.android.R
+import com.alibaba.mnnllm.android.debug.DebugActivity
 import com.alibaba.mnnllm.android.update.UpdateChecker
 import com.alibaba.mnnllm.android.utils.AppUtils
 import com.alibaba.mnnllm.android.utils.PreferenceUtils
@@ -19,9 +23,15 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
 
     companion object {
         const val TAG = "MainSettingsFragment"
+        private const val DEBUG_CLICK_COUNT = 5
+        private const val DEBUG_CLICK_TIMEOUT = 3000L // 3 seconds
     }
 
     private var updateChecker: UpdateChecker? = null
+    private var debugClickCount = 0
+    private var debugClickHandler = Handler(Looper.getMainLooper())
+    private var debugClickRunnable: Runnable? = null
+    private var updateCheckRunnable: Runnable? = null
 
     override fun onResume() {
         super.onResume()
@@ -38,8 +48,13 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
                 AppUtils.getAppVersionName(requireContext())
             )
             setOnPreferenceClickListener {
-                updateChecker = UpdateChecker(requireContext())
-                updateChecker?.checkForUpdates(requireContext(), true)
+                handleDebugClick()
+                updateCheckRunnable?.let { debugClickHandler.removeCallbacks(it) }
+                updateCheckRunnable = Runnable {
+                    updateChecker = UpdateChecker(requireContext())
+                    updateChecker?.checkForUpdates(requireContext(), true)
+                }
+                debugClickHandler.postDelayed(updateCheckRunnable!!, 1000L)
                 true
             }
         }
@@ -47,15 +62,12 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
         // 重置 API配置
         val resetApiConfigPref = findPreference<Preference>("reset_api_config")
         resetApiConfigPref?.setOnPreferenceClickListener {
-            // 显示 配置确认对话框
             androidx.appcompat.app.AlertDialog.Builder(requireContext())
                 .setTitle(R.string.reset_api_config)
                 .setMessage(R.string.reset_api_config_confirm_message)
                 .setPositiveButton(android.R.string.ok) { _, _ ->
-                    // 重置 API配置
                     ApiServerConfig.resetToDefault(requireContext())
                     
-                    // 如果API服务正在运行，则使用新配置重启服务
                     if (MainSettings.isApiServiceEnabled(requireContext()) && ApiServiceManager.isApiServiceRunning()) {
                         ApiServiceManager.stopApiService(requireContext())
                         ApiServiceManager.startApiService(requireContext())
@@ -114,5 +126,31 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
                 true
             }
         }
+    }
+
+    private fun handleDebugClick() {
+        debugClickCount++
+        
+        debugClickRunnable?.let { debugClickHandler.removeCallbacks(it) }
+        
+        if (debugClickCount >= DEBUG_CLICK_COUNT) {
+            updateCheckRunnable?.let { debugClickHandler.removeCallbacks(it) }
+            val intent = Intent(requireContext(), DebugActivity::class.java)
+            startActivity(intent)
+            debugClickCount = 0
+            Log.d(TAG, "Debug mode activated")
+        } else {
+            debugClickRunnable = Runnable {
+                debugClickCount = 0
+                Log.d(TAG, "Debug click count reset due to timeout")
+            }
+            debugClickHandler.postDelayed(debugClickRunnable!!, DEBUG_CLICK_TIMEOUT)
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        debugClickRunnable?.let { debugClickHandler.removeCallbacks(it) }
+        updateCheckRunnable?.let { debugClickHandler.removeCallbacks(it) }
     }
 }
