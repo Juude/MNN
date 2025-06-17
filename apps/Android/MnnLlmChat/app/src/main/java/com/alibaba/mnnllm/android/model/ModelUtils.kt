@@ -114,9 +114,6 @@ object ModelUtils {
      */
     private val localModelList: MutableList<ModelItem> by lazy {
         val result = mutableListOf<ModelItem>()
-//        result.add(ModelItem.fromLocalModel("Qwen-Omni-7B", "/data/local/tmp/mnn_bench/Qwen2.5-Omni-7B-MNN"))
-//        result.add(ModelItem.fromLocalModel("Qwen-Omni-3B", "/data/local/tmp/mnn_bench/Qwen2.5-Omni-3B-MNN"))
-//        result.add(ModelItem.fromLocalModel("Qwen3-30B-A3B-MNN", "/data/local/tmp/mnn_bench/Qwen3-30B-A3B-MNN"))
         try {
             val modelsDir = File("/data/local/tmp/mnn_models/")
             if (modelsDir.exists() && modelsDir.isDirectory) {

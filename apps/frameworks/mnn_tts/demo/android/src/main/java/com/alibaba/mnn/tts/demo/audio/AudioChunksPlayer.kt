@@ -2,7 +2,6 @@ package com.alibaba.mnn.tts.demo.audio
 
 import android.media.AudioAttributes
 import android.media.AudioFormat
-import android.media.AudioManager
 import android.media.AudioTrack
 import android.util.Log
 import kotlinx.coroutines.Dispatchers

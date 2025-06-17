@@ -39,7 +39,7 @@ class MainActivity : AppCompatActivity() {
         ttsService = TtsService()
         lifecycleScope.launch {
             try {
-                val modelDir = getExternalFilesDir(null)?.absolutePath ?: ""
+                val modelDir = "/data/local/tmp/test_new_tts/bert-vits/"
                 val initResult = ttsService.init(modelDir)
                 if (initResult) {
                     Log.d("TTS_TEST", "TTS Service initialized successfully")
@@ -57,7 +57,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun initAudioPlayer() {
         audioPlayer = AudioChunksPlayer()
-        audioPlayer.sampleRate = 22050 // Common TTS sample rate
+        audioPlayer.sampleRate = 44100 // Common TTS sample rate
         audioPlayer.start()
     }
 
