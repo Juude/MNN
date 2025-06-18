@@ -100,6 +100,10 @@ dependencies {
     implementation 'com.nambimobile.widgets:expandable-fab:1.2.1'
     implementation 'com.github.squti:Android-Wave-Recorder:2.0.1'
     implementation 'androidx.preference:preference-ktx:1.2.1'
+    
+    // MNN TTS Framework
+    implementation project(':mnn_tts')
+    
     testImplementation 'junit:junit:4.13.2'
     androidTestImplementation 'androidx.test.ext:junit:1.2.1'
     androidTestImplementation 'androidx.test.espresso:espresso-core:3.6.1'

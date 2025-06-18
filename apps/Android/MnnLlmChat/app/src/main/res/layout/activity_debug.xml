@@ -40,20 +40,30 @@
         android:text="@string/start_asr_test"
         android:layout_marginBottom="8dp" />
 
-    <!-- Add more test buttons here in the future -->
+    <!-- TTS Test Section -->
     <Button
-        android:id="@+id/placeholderButton1"
+        android:id="@+id/ttsTestButton"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="@string/placeholder_test_1"
+        android:text="@string/start_tts_test"
+        android:layout_marginBottom="8dp" />
+
+    <EditText
+        android:id="@+id/ttsInputText"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="@string/tts_test_input_hint"
+        android:inputType="textMultiLine"
+        android:minLines="2"
+        android:maxLines="4"
         android:enabled="false"
         android:layout_marginBottom="8dp" />
 
     <Button
-        android:id="@+id/placeholderButton2"
+        android:id="@+id/ttsProcessButton"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="@string/placeholder_test_2"
+        android:text="@string/tts_test_button"
         android:enabled="false"
         android:layout_marginBottom="16dp" />
 

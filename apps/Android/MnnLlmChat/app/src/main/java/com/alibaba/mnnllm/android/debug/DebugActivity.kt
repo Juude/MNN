@@ -9,14 +9,19 @@ import android.os.Bundle
 import android.util.Log
 import android.view.View
 import android.widget.Button
+import android.widget.EditText
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
 import com.alibaba.mnnllm.android.R
 import com.alibaba.mnnllm.android.asr.AsrService
+import com.alibaba.mnnllm.android.audio.AudioChunksPlayer
+import com.alibaba.mnnllm.android.audio.AudioPlayer
+import com.taobao.meta.avatar.tts.TtsService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -34,9 +39,15 @@ class DebugActivity : AppCompatActivity() {
     private lateinit var asrTestButton: Button
     private lateinit var clearLogButton: Button
     private lateinit var closeDebugModeButton: Button
+    private lateinit var ttsTestButton: Button
+    private lateinit var ttsInputText: EditText
+    private lateinit var ttsProcessButton: Button
     
     private var recognizeService: AsrService? = null
     private var isRecording = false
+    private var ttsService: TtsService? = null
+    private var audioPlayer: AudioChunksPlayer? = null
+    private var isTtsInitialized = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -53,6 +64,9 @@ class DebugActivity : AppCompatActivity() {
         asrTestButton = findViewById(R.id.asrTestButton)
         clearLogButton = findViewById(R.id.clearLogButton)
         closeDebugModeButton = findViewById(R.id.closeDebugModeButton)
+        ttsTestButton = findViewById(R.id.ttsTestButton)
+        ttsInputText = findViewById(R.id.ttsInputText)
+        ttsProcessButton = findViewById(R.id.ttsProcessButton)
     }
 
     private fun setupClickListeners() {
@@ -70,6 +84,18 @@ class DebugActivity : AppCompatActivity() {
 
         closeDebugModeButton.setOnClickListener {
             closeDebugMode()
+        }
+
+        ttsTestButton.setOnClickListener {
+            if (isTtsInitialized) {
+                stopTtsTest()
+            } else {
+                startTtsTest()
+            }
+        }
+
+        ttsProcessButton.setOnClickListener {
+            processTtsText()
         }
     }
 
@@ -165,7 +191,6 @@ class DebugActivity : AppCompatActivity() {
         
         runOnUiThread {
             logTextView.append(logMessage)
-            // 自动滚动到底部
             scrollView.post {
                 scrollView.fullScroll(View.FOCUS_DOWN)
             }
@@ -198,8 +223,123 @@ class DebugActivity : AppCompatActivity() {
             .show()
     }
 
+    private fun startTtsTest() {
+        CoroutineScope(Dispatchers.Main).launch {
+            try {
+                log("Starting TTS test...")
+                ttsService = TtsService()
+                audioPlayer = AudioChunksPlayer()
+                
+                withContext(Dispatchers.IO) {
+                    try {
+                        val modelDir = "/data/local/tmp/test_new_tts/bert-vits/"
+                        log("Initializing TTS with model directory: $modelDir")
+                        val initResult = ttsService?.init(modelDir)
+                        if (initResult == true) {
+                            log("TTS Service initialized successfully")
+                            isTtsInitialized = true
+                            withContext(Dispatchers.Main) {
+                                ttsTestButton.text = getString(R.string.stop_tts_test)
+                                ttsInputText.isEnabled = true
+                                ttsProcessButton.isEnabled = true
+                                ttsInputText.setText("Hello, this is a test of the TTS system.")
+                            }
+                            log("TTS test started successfully")
+                        } else {
+                            log("TTS Service initialization failed")
+                            Log.e(TAG, "TTS Service initialization failed")
+                        }
+                    } catch (e: Exception) {
+                        log("TTS initialization error: ${e.message}")
+                        Log.e(TAG, "TTS initialization error", e)
+                    }
+                }
+                
+            } catch (e: Exception) {
+                log("TTS test failed: ${e.message}")
+                Log.e(TAG, "TTS test failed", e)
+            }
+        }
+    }
+
+    private fun stopTtsTest() {
+        try {
+            audioPlayer?.destroy()
+            ttsService?.destroy()
+            ttsService = null
+            audioPlayer = null
+            isTtsInitialized = false
+            ttsTestButton.text = getString(R.string.start_tts_test)
+            ttsInputText.isEnabled = false
+            ttsProcessButton.isEnabled = false
+            log("TTS test stopped")
+        } catch (e: Exception) {
+            log("Error stopping TTS test: ${e.message}")
+            Log.e(TAG, "Error stopping TTS test", e)
+        }
+    }
+
+    private fun processTtsText() {
+        val text = ttsInputText.text.toString().trim()
+        if (text.isEmpty()) {
+            log("Please enter some text")
+            return
+        }
+
+        if (!isTtsInitialized || ttsService == null) {
+            log("TTS Service not initialized. Please start TTS test first.")
+            return
+        }
+
+        lifecycleScope.launch {
+            try {
+                log("Processing TTS text: $text")
+                
+                // Wait for TTS service to be ready
+                val isReady = ttsService?.waitForInitComplete()
+                if (isReady != true) {
+                    log("TTS Service not ready")
+                    return@launch
+                }
+
+                log("TTS Service is ready, processing text...")
+
+                // Process text with TTS
+                val audioData = ttsService?.process(text, 0)
+                if (audioData != null && audioData.isNotEmpty()) {
+                    log("Generated audio data with ${audioData.size} samples")
+                    
+                    // Update UI with results
+                    log("Generated ${audioData.size} audio samples. Playing...")
+
+                    // Initialize audio player if needed
+                    if (audioPlayer == null) {
+                        audioPlayer = AudioChunksPlayer()
+                        audioPlayer!!.sampleRate = 44100
+                    }
+                    audioPlayer?.start()
+
+                    // Play the audio
+                    audioPlayer?.playChunk(audioData)
+                    
+                    // Wait for playback to complete
+                    audioPlayer?.waitStop()
+                    
+                    log("Playback completed. Generated ${audioData.size} samples.")
+                } else {
+                    log("Failed to generate audio data or audio data is empty")
+                }
+
+            } catch (e: Exception) {
+                log("Error processing TTS: ${e.message}")
+                Log.e(TAG, "Error processing TTS", e)
+            }
+        }
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         stopAsrTest()
+        stopTtsTest()
     }
 } 

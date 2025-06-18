@@ -241,6 +241,17 @@
     <string name="test_items">Test Items</string>
     <string name="start_asr_test">Start ASR Test</string>
     <string name="stop_asr_test">Stop ASR Test</string>
+    <string name="start_tts_test">Start TTS Test</string>
+    <string name="stop_tts_test">Stop TTS Test</string>
+    <string name="tts_test_input_hint">Enter text to convert to speech</string>
+    <string name="tts_test_button">Test TTS</string>
+    <string name="tts_initializing">TTS Service initializing...</string>
+    <string name="tts_ready">TTS Service ready</string>
+    <string name="tts_processing">Processing: %1$s</string>
+    <string name="tts_generated_samples">Generated %1$d audio samples. Playing...</string>
+    <string name="tts_playback_completed">Playback completed. Generated %1$d samples.</string>
+    <string name="tts_error">TTS Error: %1$s</string>
+    <string name="tts_not_ready">TTS Service not ready</string>
     <string name="placeholder_test_1">Test Item 1 (Coming Soon)</string>
     <string name="placeholder_test_2">Test Item 2 (Coming Soon)</string>
     <string name="debug_log">Debug Log</string>

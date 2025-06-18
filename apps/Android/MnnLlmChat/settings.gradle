@@ -17,3 +17,5 @@ dependencyResolutionManagement {
 
 rootProject.name = "MnnLlmChat"
 include ':app'
+include ':mnn_tts'
+project(':mnn_tts').projectDir = new File('../../frameworks/mnn_tts/android')
