@@ -32,10 +32,29 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
     private var debugClickHandler = Handler(Looper.getMainLooper())
     private var debugClickRunnable: Runnable? = null
     private var updateCheckRunnable: Runnable? = null
+    private var debugModePref: Preference? = null
 
     override fun onResume() {
         super.onResume()
         updateChecker?.checkForUpdates(requireContext(), false)
+    }
+
+
+    override fun onStart() {
+        super.onStart()
+
+        // Setup debug mode preference
+        debugModePref = findPreference<Preference>("debug_mode")
+        debugModePref?.setOnPreferenceClickListener {
+            val intent = Intent(requireContext(), DebugActivity::class.java)
+            startActivity(intent)
+            true
+        }
+
+        // Ensure debug mode preference is hidden by default unless previously activated
+        val sharedPreferences = preferenceManager.sharedPreferences
+        val isDebugModeActivated = sharedPreferences?.getBoolean("debug_mode_activated", false) ?: false
+        debugModePref?.isVisible = isDebugModeActivated
     }
 
     override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
@@ -58,6 +77,7 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
                 true
             }
         }
+
 
         // 重置 API配置
         val resetApiConfigPref = findPreference<Preference>("reset_api_config")
@@ -135,10 +155,12 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
         
         if (debugClickCount >= DEBUG_CLICK_COUNT) {
             updateCheckRunnable?.let { debugClickHandler.removeCallbacks(it) }
-            val intent = Intent(requireContext(), DebugActivity::class.java)
-            startActivity(intent)
+            // Show debug mode preference instead of directly opening DebugActivity
+            debugModePref?.isVisible = true
+            // Save debug mode activation state to SharedPreferences
+            preferenceManager.sharedPreferences?.edit()?.putBoolean("debug_mode_activated", true)?.apply()
             debugClickCount = 0
-            Log.d(TAG, "Debug mode activated")
+            Log.d(TAG, "Debug mode preference activated")
         } else {
             debugClickRunnable = Runnable {
                 debugClickCount = 0

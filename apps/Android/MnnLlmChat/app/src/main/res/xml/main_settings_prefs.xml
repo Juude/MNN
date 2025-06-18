@@ -36,4 +36,9 @@
         android:title="@string/check_for_update"
         android:summary="Tap to check for updates" />
 
+    <Preference
+        android:key="debug_mode"
+        android:title="@string/debug_mode"
+        android:visible="false" />
+
 </PreferenceScreen>

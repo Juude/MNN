@@ -57,6 +57,22 @@
         android:enabled="false"
         android:layout_marginBottom="16dp" />
 
+    <!-- Debug Mode Control Section -->
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="@string/debug_mode_control"
+        android:textSize="18sp"
+        android:textStyle="bold"
+        android:layout_marginBottom="8dp" />
+
+    <Button
+        android:id="@+id/closeDebugModeButton"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="@string/close_debug_mode"
+        android:layout_marginBottom="16dp" />
+
     <!-- Log Section -->
     <LinearLayout
         android:layout_width="match_parent"

@@ -33,6 +33,7 @@ class DebugActivity : AppCompatActivity() {
     private lateinit var logTextView: TextView
     private lateinit var asrTestButton: Button
     private lateinit var clearLogButton: Button
+    private lateinit var closeDebugModeButton: Button
     
     private var recognizeService: AsrService? = null
     private var isRecording = false
@@ -51,6 +52,7 @@ class DebugActivity : AppCompatActivity() {
         logTextView = findViewById(R.id.logTextView)
         asrTestButton = findViewById(R.id.asrTestButton)
         clearLogButton = findViewById(R.id.clearLogButton)
+        closeDebugModeButton = findViewById(R.id.closeDebugModeButton)
     }
 
     private fun setupClickListeners() {
@@ -65,13 +67,17 @@ class DebugActivity : AppCompatActivity() {
         clearLogButton.setOnClickListener {
             clearLog()
         }
+
+        closeDebugModeButton.setOnClickListener {
+            closeDebugMode()
+        }
     }
 
     private fun startAsrTest() {
         if (checkRecordAudioPermission()) {
             CoroutineScope(Dispatchers.Main).launch {
                 try {
-                    log("Starting ASR test...")
+                log("Starting ASR test...")
                     val modelDir = "/data/local/tmp/asr_models" 
                     recognizeService = AsrService(this@DebugActivity, modelDir)
                     
@@ -171,6 +177,25 @@ class DebugActivity : AppCompatActivity() {
     private fun clearLog() {
         logTextView.text = ""
         log("Log cleared")
+    }
+
+    private fun closeDebugMode() {
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle(R.string.close_debug_mode_title)
+            .setMessage(R.string.close_debug_mode_message)
+            .setPositiveButton(R.string.close_debug_mode) { _, _ ->
+                // Save debug mode deactivation state to SharedPreferences
+                val sharedPreferences = getSharedPreferences("com.alibaba.mnnllm.android_preferences", MODE_PRIVATE)
+                sharedPreferences.edit().putBoolean("debug_mode_activated", false).apply()
+                
+                log("Debug mode deactivated")
+                Toast.makeText(this, "Debug mode has been closed. It will be hidden from settings.", Toast.LENGTH_LONG).show()
+                
+                // Close the activity
+                finish()
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
     }
 
     override fun onDestroy() {

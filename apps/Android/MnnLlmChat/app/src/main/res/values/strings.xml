@@ -55,6 +55,11 @@
     <string name="select_text">Select text</string>
     <string name="copy_success">Copy success</string>
     <string name="debug_message_copied">debug message copied, please report issue in github</string>
+    <string name="debug_mode">Debug Mode</string>
+    <string name="close_debug_mode">Close Debug Mode</string>
+    <string name="debug_mode_control">Debug Mode Control</string>
+    <string name="close_debug_mode_title">Close Debug Mode</string>
+    <string name="close_debug_mode_message">Are you sure you want to close debug mode? This will hide the debug mode option from settings until you activate it again by clicking the version info 5 times.</string>
     <string name="use_model_scope_download">Use modelscope to download</string>
     <string name="clear_mmap_cache">Clear mmap cache</string>
     <string name="use_mmap">Use mmap</string>

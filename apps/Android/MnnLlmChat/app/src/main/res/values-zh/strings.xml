@@ -232,6 +232,11 @@
     <!-- Debug Activity Strings -->
     <string name="debug_activity_title">调试模式</string>
     <string name="debug_activity_description">开发者测试界面，用于测试各种组件</string>
+    <string name="debug_mode">调试模式</string>
+    <string name="close_debug_mode">关闭调试模式</string>
+    <string name="debug_mode_control">调试模式控制</string>
+    <string name="close_debug_mode_title">关闭调试模式</string>
+    <string name="close_debug_mode_message">确定要关闭调试模式吗？这将隐藏设置中的调试模式选项，直到您再次点击版本信息5次来激活它。</string>
     <string name="test_items">测试项目</string>
     <string name="start_asr_test">开始ASR测试</string>
     <string name="stop_asr_test">停止ASR测试</string>
