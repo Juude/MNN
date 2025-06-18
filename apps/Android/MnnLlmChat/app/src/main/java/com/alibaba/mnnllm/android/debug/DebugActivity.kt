@@ -16,7 +16,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.alibaba.mnnllm.android.R
-import com.alibaba.mnnllm.android.asr.RecognizeService
+import com.alibaba.mnnllm.android.asr.AsrService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -34,7 +34,7 @@ class DebugActivity : AppCompatActivity() {
     private lateinit var asrTestButton: Button
     private lateinit var clearLogButton: Button
     
-    private var recognizeService: RecognizeService? = null
+    private var recognizeService: AsrService? = null
     private var isRecording = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -72,18 +72,18 @@ class DebugActivity : AppCompatActivity() {
             CoroutineScope(Dispatchers.Main).launch {
                 try {
                     log("Starting ASR test...")
-                    recognizeService = RecognizeService(this@DebugActivity)
+                    val modelDir = "/data/local/tmp/asr_models" 
+                    recognizeService = AsrService(this@DebugActivity, modelDir)
                     
                     withContext(Dispatchers.IO) {
                         recognizeService?.initRecognizer()
                     }
-                    
                     recognizeService?.onRecognizeText = { text ->
                         runOnUiThread {
                             log("ASR Result: $text")
                         }
                     }
-                    
+
                     recognizeService?.startRecord()
                     isRecording = true
                     asrTestButton.text = getString(R.string.stop_asr_test)

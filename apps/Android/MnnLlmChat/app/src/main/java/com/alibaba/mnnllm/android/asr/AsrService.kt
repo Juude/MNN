@@ -4,13 +4,15 @@
 package com.alibaba.mnnllm.android.asr
 
 import android.Manifest
-import android.app.Activity
+import android.annotation.SuppressLint
 import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.util.Log
 import androidx.core.app.ActivityCompat
+import com.alibaba.mnnllm.android.debug.DebugActivity
+import com.alibaba.mnnllm.android.utils.DeviceUtils
 import com.alibaba.mnnllm.android.utils.Permissions.REQUEST_RECORD_AUDIO_PERMISSION
 import com.k2fsa.sherpa.mnn.OnlineCtcFstDecoderConfig
 import com.k2fsa.sherpa.mnn.OnlineRecognizer
@@ -19,19 +21,25 @@ import com.k2fsa.sherpa.mnn.getEndpointConfig
 import com.k2fsa.sherpa.mnn.getFeatureConfig
 import com.k2fsa.sherpa.mnn.getModelConfig
 import com.k2fsa.sherpa.mnn.getOnlineLMConfig
+import com.k2fsa.sherpa.mnn.setAsrModelDir
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
-class RecognizeService(private val activity: Activity) {
+class AsrService(
+    private val activity: DebugActivity,
+    private val modelDir: String = "/data/local/tmp/asr_models"
+) {
 
     private val permissions = arrayOf(Manifest.permission.RECORD_AUDIO)
 
     companion object {
         const val TAG = "OnlineRecorder"
     }
+
     private val initComplete = CompletableDeferred<Boolean>()
     private var recognizer: OnlineRecognizer? = null
     private var audioRecord: AudioRecord? = null
@@ -43,17 +51,24 @@ class RecognizeService(private val activity: Activity) {
     private val isRecording = AtomicBoolean(false)
     @Volatile
     private var isLoaded = false
-    @Volatile
-    private var initStarted = false
-
     var onRecognizeText: ((String) -> Unit)? = null
 
+    private val acceptTimeNs = AtomicLong(0)
+    private val decodeTimeNs = AtomicLong(0)
+    private val chunkCount = AtomicLong(0)
+    private val decodeCount = AtomicLong(0)
+
+    private var utteranceProcTimeNs: Long = 0
+    private var utteranceAudioTimeSec: Double = 0.0
+    private var totalRtf: Double = 0.0
+    private var utteranceCount: Int = 0
+
     suspend fun initRecognizer() {
-        if (initStarted) {
-            initComplete.await()
-        }
-        initStarted = true
-        val type = 0
+        setAsrModelDir(modelDir)
+        Log.i(TAG, "Set ASR model directory: $modelDir")
+        
+        val type = if (DeviceUtils.isChinese) 0 else 1
+        Log.i(TAG, "Select model type $type")
         val config = getModelConfig(type)?.let {
             OnlineRecognizerConfig(
                 getFeatureConfig(sampleRateInHz, 80),
@@ -74,6 +89,7 @@ class RecognizeService(private val activity: Activity) {
         }.await()
         isLoaded = true
         initComplete.complete(true)
+        Log.d(TAG, "initRecognizer done ")
     }
 
     private fun initMicrophone(): Boolean {
@@ -86,9 +102,8 @@ class RecognizeService(private val activity: Activity) {
             return false
         }
         val numBytes = AudioRecord.getMinBufferSize(sampleRateInHz, channelConfig, audioFormat)
-        Log.i(TAG, "buffer size in milliseconds: " + (numBytes * 1000.0f / sampleRateInHz))
-        audioRecord =
-            AudioRecord(audioSource, sampleRateInHz, channelConfig, audioFormat, numBytes * 2)
+        Log.i(TAG, "buffer size in milliseconds: ${numBytes * 1000.0f / sampleRateInHz}")
+        audioRecord = AudioRecord(audioSource, sampleRateInHz, channelConfig, audioFormat, numBytes * 2)
         return true
     }
 
@@ -102,18 +117,28 @@ class RecognizeService(private val activity: Activity) {
         while (isRecording.get() && audioRecord != null) {
             val ret = audioRecord!!.read(buffer, 0, buffer.size)
             if (ret > 0) {
-                val samples = FloatArray(ret)
-                for (i in 0 until ret) {
-                    samples[i] = buffer[i] / 32768.0f
-                }
+                chunkCount.incrementAndGet()
+                val samples = FloatArray(ret) { i -> buffer[i] / 32768.0f }
+                utteranceAudioTimeSec += ret.toDouble() / sampleRateInHz
+                val tStartProc = System.nanoTime()
+                val tAcceptStart = tStartProc
                 stream.acceptWaveform(samples, sampleRateInHz)
+                val tAcceptEnd = System.nanoTime()
+                acceptTimeNs.addAndGet(tAcceptEnd - tAcceptStart)
                 while (recognizer!!.isReady(stream)) {
+                    val tDecodeStart = System.nanoTime()
                     recognizer!!.decode(stream)
+                    val tDecodeEnd = System.nanoTime()
+                    decodeTimeNs.addAndGet(tDecodeEnd - tDecodeStart)
+                    decodeCount.incrementAndGet()
                 }
+                val tEndProc = System.nanoTime()
+                utteranceProcTimeNs += (tEndProc - tStartProc)
+
                 val isEndpoint = recognizer!!.isEndpoint(stream)
                 var text = recognizer!!.getResult(stream).text
 
-                if (isEndpoint && !recognizer!!.config.modelConfig.paraformer.encoder.isEmpty()) {
+                if (isEndpoint && recognizer!!.config.modelConfig.paraformer.encoder.isNotEmpty()) {
                     val tailPaddings = FloatArray((0.8 * sampleRateInHz).toInt())
                     stream.acceptWaveform(tailPaddings, sampleRateInHz)
                     while (recognizer!!.isReady(stream)) {
@@ -121,18 +146,43 @@ class RecognizeService(private val activity: Activity) {
                     }
                     text = recognizer!!.getResult(stream).text
                 }
+
                 if (isEndpoint) {
+                    val T_proc = utteranceProcTimeNs / 1_000_000_000.0
+                    val T_audio = utteranceAudioTimeSec
+                    val rtf = if (T_audio > 0) T_proc / T_audio else 0.0
+                    totalRtf += rtf
+                    utteranceCount += 1
+//                    Log.i(TAG, "Utterance RTF = ${"%.3f".format(rtf)} over ${"%.2f".format(T_audio)}s audio")
                     recognizer!!.reset(stream)
                     if (text.isNotEmpty()) {
                         onRecognizeText?.invoke(text)
-                        Log.d(TAG, "recorgnize text  :${text}")
+                        Log.d(TAG, "recognize text: $text")
                     }
+                    utteranceProcTimeNs = 0
+                    utteranceAudioTimeSec = 0.0
                 }
             }
         }
         stream.release()
-    }
+        val totalChunks = chunkCount.get().takeIf { it > 0 } ?: 1
+        val totalDecodes = decodeCount.get().takeIf { it > 0 } ?: 1
+        val avgAcceptMs = acceptTimeNs.get() / totalChunks / 1_000_000.0
+        val avgDecodeMs = decodeTimeNs.get() / totalDecodes / 1_000_000.0
+        Log.i(TAG, "Average acceptWaveform: ${"%.2f".format(avgAcceptMs)} ms over $totalChunks chunks")
+        Log.i(TAG, "Average decode: ${"%.2f".format(avgDecodeMs)} ms over $totalDecodes calls")
 
+        if (utteranceCount > 0) {
+            val avgRtf = totalRtf / utteranceCount
+            Log.i(TAG, "Average RTF over $utteranceCount utterances = ${"%.3f".format(avgRtf)}")
+        }
+        acceptTimeNs.set(0)
+        decodeTimeNs.set(0)
+        chunkCount.set(0)
+        decodeCount.set(0)
+        totalRtf = 0.0
+        utteranceCount = 0
+    }
 
     fun stopRecord() {
         Log.i(TAG, "stopRecord isRecording: ${isRecording.get()}")
@@ -157,9 +207,9 @@ class RecognizeService(private val activity: Activity) {
             Log.e(TAG, "Failed to initialize microphone")
             return
         }
-        if (audioRecord != null) {
-            Log.i(TAG, "state: " + audioRecord!!.state)
-            audioRecord?.startRecording()
+        audioRecord?.let {
+            Log.i(TAG, "state: ${it.state}")
+            it.startRecording()
             isRecording.set(true)
             recordingThread = Thread { this.processSamples() }
             recordingThread!!.start()

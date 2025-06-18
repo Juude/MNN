@@ -39,6 +39,11 @@ android {
             jvmTarget = "1.8"
         }
 
+        lintOptions {
+            disable 'TimberArgCount', 'TimberArgTypes', 'TimberTagLength', 'BinaryOperationInTimber',
+                    'LogNotTimber', 'StringFormatInTimber', 'ThrowableNotAtBeginning'
+        }
+
         ndk {
             //noinspection ChromeOsAbiSupport
             abiFilters "arm64-v8a" // Include only arm64-v8a

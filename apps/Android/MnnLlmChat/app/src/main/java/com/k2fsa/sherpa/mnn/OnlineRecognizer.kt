@@ -148,227 +148,46 @@ class OnlineRecognizer(
     }
 }
 
+// 默认的模型目录
+private var ASR_MODEL_DIR = "/data/local/tmp/asr_models"
 
-/*
-Please see
-https://k2-fsa.github.io/sherpa/onnx/pretrained_models/index.html
-for a list of pre-trained models.
-
-We only add a few here. Please change the following code
-to add your own. (It should be straightforward to add a new model
-by following the code)
-
-@param type
-0 - sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20 (Bilingual, Chinese + English)
-    https://k2-fsa.github.io/sherpa/onnx/pretrained_models/zipformer-transducer-models.html#sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20-bilingual-chinese-english
-
-1 - csukuangfj/sherpa-onnx-lstm-zh-2023-02-20 (Chinese)
-
-    https://k2-fsa.github.io/sherpa/onnx/pretrained_models/lstm-transducer-models.html#csukuangfj-sherpa-onnx-lstm-zh-2023-02-20-chinese
-
-2 - csukuangfj/sherpa-onnx-lstm-en-2023-02-17 (English)
-    https://k2-fsa.github.io/sherpa/onnx/pretrained_models/lstm-transducer-models.html#csukuangfj-sherpa-onnx-lstm-en-2023-02-17-english
-
-3,4 - pkufool/icefall-asr-zipformer-streaming-wenetspeech-20230615
-    https://huggingface.co/pkufool/icefall-asr-zipformer-streaming-wenetspeech-20230615
-    3 - int8 encoder
-    4 - float32 encoder
-
-5 - csukuangfj/sherpa-onnx-streaming-paraformer-bilingual-zh-en
-    https://huggingface.co/csukuangfj/sherpa-onnx-streaming-paraformer-bilingual-zh-en
-
-6 - sherpa-onnx-streaming-zipformer-en-2023-06-26
-    https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-en-2023-06-26
-
-7 - shaojieli/sherpa-onnx-streaming-zipformer-fr-2023-04-14 (French)
-    https://huggingface.co/shaojieli/sherpa-onnx-streaming-zipformer-fr-2023-04-14
-
-8 - csukuangfj/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20 (Bilingual, Chinese + English)
-    https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20
-    encoder int8, decoder/joiner float32
-
+/**
+ * 设置ASR模型目录
+ * @param modelDir 模型目录路径
  */
+fun setAsrModelDir(modelDir: String) {
+    ASR_MODEL_DIR = modelDir
+}
+
+/**
+ * 获取当前ASR模型目录
+ * @return 当前模型目录路径
+ */
+fun getAsrModelDir(): String {
+    return ASR_MODEL_DIR
+}
+
 fun getModelConfig(type: Int): OnlineModelConfig? {
     when (type) {
         0 -> {
-            val modelDir = "sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20"
+            val modelDir = "${ASR_MODEL_DIR}/sherpa-mnn-streaming-zipformer-bilingual-zh-en-2023-02-20"
             return OnlineModelConfig(
                 transducer = OnlineTransducerModelConfig(
-                    encoder = "$modelDir/encoder-epoch-99-avg-1.onnx",
-                    decoder = "$modelDir/decoder-epoch-99-avg-1.onnx",
-                    joiner = "$modelDir/joiner-epoch-99-avg-1.onnx",
+                    encoder = "$modelDir/encoder-epoch-99-avg-1.int8.mnn",
+                    decoder = "$modelDir/decoder-epoch-99-avg-1.int8.mnn",
+                    joiner = "$modelDir/joiner-epoch-99-avg-1.int8.mnn",
                 ),
                 tokens = "$modelDir/tokens.txt",
                 modelType = "zipformer",
             )
         }
-
         1 -> {
-            val modelDir = "sherpa-onnx-lstm-zh-2023-02-20"
+            val modelDir = "${ASR_MODEL_DIR}/sherpa-mnn-streaming-zipformer-en-2023-02-21"
             return OnlineModelConfig(
                 transducer = OnlineTransducerModelConfig(
-                    encoder = "$modelDir/encoder-epoch-11-avg-1.onnx",
-                    decoder = "$modelDir/decoder-epoch-11-avg-1.onnx",
-                    joiner = "$modelDir/joiner-epoch-11-avg-1.onnx",
-                ),
-                tokens = "$modelDir/tokens.txt",
-                modelType = "lstm",
-            )
-        }
-
-        2 -> {
-            val modelDir = "sherpa-onnx-lstm-en-2023-02-17"
-            return OnlineModelConfig(
-                transducer = OnlineTransducerModelConfig(
-                    encoder = "$modelDir/encoder-epoch-99-avg-1.onnx",
-                    decoder = "$modelDir/decoder-epoch-99-avg-1.onnx",
-                    joiner = "$modelDir/joiner-epoch-99-avg-1.onnx",
-                ),
-                tokens = "$modelDir/tokens.txt",
-                modelType = "lstm",
-            )
-        }
-
-        3 -> {
-            val modelDir = "icefall-asr-zipformer-streaming-wenetspeech-20230615"
-            return OnlineModelConfig(
-                transducer = OnlineTransducerModelConfig(
-                    encoder = "$modelDir/exp/encoder-epoch-12-avg-4-chunk-16-left-128.int8.onnx",
-                    decoder = "$modelDir/exp/decoder-epoch-12-avg-4-chunk-16-left-128.onnx",
-                    joiner = "$modelDir/exp/joiner-epoch-12-avg-4-chunk-16-left-128.onnx",
-                ),
-                tokens = "$modelDir/data/lang_char/tokens.txt",
-                modelType = "zipformer2",
-            )
-        }
-
-        4 -> {
-            val modelDir = "icefall-asr-zipformer-streaming-wenetspeech-20230615"
-            return OnlineModelConfig(
-                transducer = OnlineTransducerModelConfig(
-                    encoder = "$modelDir/exp/encoder-epoch-12-avg-4-chunk-16-left-128.onnx",
-                    decoder = "$modelDir/exp/decoder-epoch-12-avg-4-chunk-16-left-128.onnx",
-                    joiner = "$modelDir/exp/joiner-epoch-12-avg-4-chunk-16-left-128.onnx",
-                ),
-                tokens = "$modelDir/data/lang_char/tokens.txt",
-                modelType = "zipformer2",
-            )
-        }
-
-        5 -> {
-            val modelDir = "sherpa-onnx-streaming-paraformer-bilingual-zh-en"
-            return OnlineModelConfig(
-                paraformer = OnlineParaformerModelConfig(
-                    encoder = "$modelDir/encoder.int8.onnx",
-                    decoder = "$modelDir/decoder.int8.onnx",
-                ),
-                tokens = "$modelDir/tokens.txt",
-                modelType = "paraformer",
-            )
-        }
-
-        6 -> {
-            val modelDir = "sherpa-onnx-streaming-zipformer-en-2023-06-26"
-            return OnlineModelConfig(
-                transducer = OnlineTransducerModelConfig(
-                    encoder = "$modelDir/encoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx",
-                    decoder = "$modelDir/decoder-epoch-99-avg-1-chunk-16-left-128.onnx",
-                    joiner = "$modelDir/joiner-epoch-99-avg-1-chunk-16-left-128.onnx",
-                ),
-                tokens = "$modelDir/tokens.txt",
-                modelType = "zipformer2",
-            )
-        }
-
-        7 -> {
-            val modelDir = "sherpa-onnx-streaming-zipformer-fr-2023-04-14"
-            return OnlineModelConfig(
-                transducer = OnlineTransducerModelConfig(
-                    encoder = "$modelDir/encoder-epoch-29-avg-9-with-averaged-model.int8.onnx",
-                    decoder = "$modelDir/decoder-epoch-29-avg-9-with-averaged-model.onnx",
-                    joiner = "$modelDir/joiner-epoch-29-avg-9-with-averaged-model.onnx",
-                ),
-                tokens = "$modelDir/tokens.txt",
-                modelType = "zipformer",
-            )
-        }
-
-        8 -> {
-            val modelDir = "sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20"
-            return OnlineModelConfig(
-                transducer = OnlineTransducerModelConfig(
-                    encoder = "$modelDir/encoder-epoch-99-avg-1.int8.onnx",
-                    decoder = "$modelDir/decoder-epoch-99-avg-1.onnx",
-                    joiner = "$modelDir/joiner-epoch-99-avg-1.int8.onnx",
-                ),
-                tokens = "$modelDir/tokens.txt",
-                modelType = "zipformer",
-            )
-        }
-
-        9 -> {
-            val modelDir = "sherpa-onnx-streaming-zipformer-zh-14M-2023-02-23"
-            return OnlineModelConfig(
-                transducer = OnlineTransducerModelConfig(
-                    encoder = "$modelDir/encoder-epoch-99-avg-1.int8.onnx",
-                    decoder = "$modelDir/decoder-epoch-99-avg-1.onnx",
-                    joiner = "$modelDir/joiner-epoch-99-avg-1.int8.onnx",
-                ),
-                tokens = "$modelDir/tokens.txt",
-                modelType = "zipformer",
-            )
-        }
-
-        10 -> {
-            val modelDir = "sherpa-onnx-streaming-zipformer-en-20M-2023-02-17"
-            return OnlineModelConfig(
-                transducer = OnlineTransducerModelConfig(
-                    encoder = "$modelDir/encoder-epoch-99-avg-1.int8.onnx",
-                    decoder = "$modelDir/decoder-epoch-99-avg-1.onnx",
-                    joiner = "$modelDir/joiner-epoch-99-avg-1.int8.onnx",
-                ),
-                tokens = "$modelDir/tokens.txt",
-                modelType = "zipformer",
-            )
-        }
-
-        11 -> {
-            val modelDir = "sherpa-onnx-nemo-streaming-fast-conformer-ctc-en-80ms"
-            return OnlineModelConfig(
-                neMoCtc = OnlineNeMoCtcModelConfig(
-                    model = "$modelDir/model.onnx",
-                ),
-                tokens = "$modelDir/tokens.txt",
-            )
-        }
-
-        12 -> {
-            val modelDir = "sherpa-onnx-nemo-streaming-fast-conformer-ctc-en-480ms"
-            return OnlineModelConfig(
-                neMoCtc = OnlineNeMoCtcModelConfig(
-                    model = "$modelDir/model.onnx",
-                ),
-                tokens = "$modelDir/tokens.txt",
-            )
-        }
-
-        13 -> {
-            val modelDir = "sherpa-onnx-nemo-streaming-fast-conformer-ctc-en-1040ms"
-            return OnlineModelConfig(
-                neMoCtc = OnlineNeMoCtcModelConfig(
-                    model = "$modelDir/model.onnx",
-                ),
-                tokens = "$modelDir/tokens.txt",
-            )
-        }
-
-        14 -> {
-            val modelDir = "sherpa-onnx-streaming-zipformer-korean-2024-06-16"
-            return OnlineModelConfig(
-                transducer = OnlineTransducerModelConfig(
-                    encoder = "$modelDir/encoder-epoch-99-avg-1.int8.onnx",
-                    decoder = "$modelDir/decoder-epoch-99-avg-1.onnx",
-                    joiner = "$modelDir/joiner-epoch-99-avg-1.int8.onnx",
+                    encoder = "$modelDir/encoder-epoch-99-avg-1.mnn",
+                    decoder = "$modelDir/decoder-epoch-99-avg-1.mnn",
+                    joiner = "$modelDir/joiner-epoch-99-avg-1.mnn",
                 ),
                 tokens = "$modelDir/tokens.txt",
                 modelType = "zipformer",
@@ -394,7 +213,7 @@ by following the code, https://github.com/k2-fsa/icefall/blob/master/icefall/rnn
 fun getOnlineLMConfig(type: Int): OnlineLMConfig {
     when (type) {
         0 -> {
-            val modelDir = "ASR_MODEL_DIR"
+            val modelDir = ASR_MODEL_DIR
             return OnlineLMConfig(
                 model = "$modelDir/with-state-epoch-99-avg-1.int8.onnx",
                 scale = 0.5f,
@@ -411,4 +230,20 @@ fun getEndpointConfig(): EndpointConfig {
         rule3 = EndpointRule(false, 0.0f, 20.0f)
     )
 }
+
+/*
+使用示例：
+
+// 1. 设置自定义模型目录
+setAsrModelDir("/path/to/your/models")
+
+// 2. 获取当前模型目录
+val currentDir = getAsrModelDir()
+
+// 3. 在 AsrService 中使用
+val asrService = AsrService(activity, "/path/to/your/models")
+
+// 4. 或者使用默认目录
+val asrService = AsrService(activity) // 使用默认的 /data/local/tmp/asr_models
+*/
 
