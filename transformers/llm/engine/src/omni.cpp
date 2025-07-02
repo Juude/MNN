@@ -18,6 +18,9 @@
 #include "diskembedding.hpp"
 #include "sampler.hpp"
 #include "httplib.h"
+#ifdef LLM_SUPPORT_VIDEO
+#include <opencv2/opencv.hpp>
+#endif
 #ifdef LLM_SUPPORT_VISION
 #include <cv/cv.hpp>
 #endif
@@ -371,6 +374,14 @@ std::vector<int> Omni::visionProcess(const std::string& file) {
         MNN_PRINT("Omni Can't open image: %s\n", file.c_str());
         return std::vector<int>(0);
     }
+    return visionProcess(image);
+#else
+    return std::vector<int>(0);
+#endif
+}
+
+std::vector<int> Omni::visionProcess(VARP image) {
+#ifdef LLM_SUPPORT_VISION
     Timer _t;
     std::vector<int> imgIds;
     const auto inputNames = mVisionModule->getInfo()->inputNames;
@@ -383,6 +394,35 @@ std::vector<int> Omni::visionProcess(const std::string& file) {
     }
     mContext->vision_us = _t.durationInUs();
     return imgIds;
+#else
+    return std::vector<int>(0);
+#endif
+}
+
+std::vector<int> Omni::videoProcess(const std::string& file) {
+#ifdef LLM_SUPPORT_VIDEO
+    cv::VideoCapture cap(file);
+    if (!cap.isOpened()) {
+        MNN_PRINT("Omni Can't open video: %s\n", file.c_str());
+        return std::vector<int>(0);
+    }
+    int total = (int)cap.get(cv::CAP_PROP_FRAME_COUNT);
+    if (total <= 0) total = 1;
+    int sample_num = std::min(total, 8);
+    std::vector<int> ids;
+    for (int i = 0; i < sample_num; i++) {
+        cap.set(cv::CAP_PROP_POS_FRAMES, i * total / sample_num);
+        cv::Mat frame;
+        cap >> frame;
+        if (frame.empty()) break;
+        std::vector<uint8_t> buf;
+        cv::imencode(".jpg", frame, buf);
+        VARP img = MNN::CV::imdecode(buf, MNN::CV::IMREAD_COLOR);
+        if (img == nullptr) continue;
+        auto one_ids = visionProcess(img);
+        ids.insert(ids.end(), one_ids.begin(), one_ids.end());
+    }
+    return ids;
 #else
     return std::vector<int>(0);
 #endif
@@ -505,6 +545,9 @@ std::vector<int> Omni::multimodeProcess(const std::string& mode, std::string inf
     if (mode == "img" && mConfig->is_visual()) {
         return visionProcess(file_info);
     }
+    if (mode == "video" && mConfig->is_visual()) {
+        return videoProcess(file_info);
+    }
     if (mode == "audio" && mConfig->is_audio()) {
         return audioProcess(file_info);
     }
@@ -535,7 +578,7 @@ void Omni::addPositionIds(int t, int h, int w) {
 
 std::vector<int> Omni::tokenizer_encode(const std::string& prompt) {
     // split query
-    std::regex multimode_regex("<(img|audio)>(.*?)</\\1>");
+    std::regex multimode_regex("<(img|audio|video)>(.*?)</\\1>");
     std::string::const_iterator searchStart(prompt.cbegin());
     std::smatch match;
     std::vector<std::string> img_infos;
