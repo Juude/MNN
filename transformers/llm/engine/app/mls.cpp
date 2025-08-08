@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include "file_utils.hpp"
 #include "remote_model_downloader.hpp"
+#include "ms_api_client.hpp"
 #include "llm_benchmark.hpp"
 #include "mls_server.hpp"
 
@@ -350,26 +351,53 @@ static int run(int argc, const char *argv[]) {
 }
 
 int download(int argc, const char *argv[]) {
-    if (argc < 3)
-    {
+    if (argc < 3) {
         print_usage();
         return 1;
     }
     std::string repo_name = argv[2];
-    std::cout << "download repo: " << repo_name << std::endl;
-    mls::HfApiClient api_client;
-    std::string error_info;
-    if (repo_name.find("taobao-mnn/") != 0)
-    {
-        repo_name = "taobao-mnn/" + repo_name;
+    std::string source = "hf";
+    bool invalid_param = false;
+    for (int i = 3; i < argc; i++) {
+        std::string arg = argv[i];
+        if (arg == "--source" || arg == "-s") {
+            if (++i >= argc) {
+                invalid_param = true;
+                break;
+            }
+            source = argv[i];
+        }
     }
-    const auto repo_info = api_client.GetRepoInfo(repo_name, "main", error_info);
-    if (!error_info.empty())
-    {
-        std::cout << "get repo info error: " << error_info << std::endl;
+    if (invalid_param) {
+        fprintf(stderr, "error: invalid parameter\n");
         return 1;
     }
-    api_client.DownloadRepo(repo_info);
+    std::cout << "download repo: " << repo_name << " from " << source << std::endl;
+    if (source == "modelscope" || source == "ms") {
+        mls::MsApiClient api_client;
+        if (repo_name.find("MNN/") != 0) {
+            repo_name = "MNN/" + repo_name;
+        }
+        std::string error_info;
+        auto repo_info = api_client.GetRepoInfo(repo_name, error_info);
+        if (!error_info.empty()) {
+            std::cout << "get repo info error: " << error_info << std::endl;
+            return 1;
+        }
+        api_client.DownloadRepo(repo_info);
+    } else {
+        mls::HfApiClient api_client;
+        if (repo_name.find("taobao-mnn/") != 0) {
+            repo_name = "taobao-mnn/" + repo_name;
+        }
+        std::string error_info;
+        auto repo_info = api_client.GetRepoInfo(repo_name, "main", error_info);
+        if (!error_info.empty()) {
+            std::cout << "get repo info error: " << error_info << std::endl;
+            return 1;
+        }
+        api_client.DownloadRepo(repo_info);
+    }
     return 0;
 }
 
