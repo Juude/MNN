@@ -120,35 +120,89 @@ mnncli::RepoInfo HfApiClient::GetRepoInfo(
         // Make the HTTPS request
         httplib::SSLClient cli(this->host_, 443);
         httplib::Headers headers;
+        headers.emplace("User-Agent", "MNN-CLI/1.0");
+        headers.emplace("Accept", "application/json");
+        
+        std::cout << "🔍 Making request to: " << this->host_ << path << std::endl;
+        
         auto res = cli.Get(path, headers);
         if (!res || res->status != 200) {
+            std::string error_msg = "API request failed";
+            if (res) {
+                error_msg += " with status " + std::to_string(res->status);
+                if (res->status == 404) {
+                    error_msg += " - Repository not found. Check if the model exists.";
+                } else if (res->status == 403) {
+                    error_msg += " - Access forbidden. The repository might be private.";
+                } else if (res->status >= 500) {
+                    error_msg += " - Server error. Please try again later.";
+                }
+                std::cout << "❌ " << error_msg << std::endl;
+                std::cout << "   Response headers:" << std::endl;
+                for (const auto& header : res->headers) {
+                    std::cout << "     " << header.first << ": " << header.second << std::endl;
+                }
+                if (!res->body.empty()) {
+                    std::cout << "   Response body preview: " << res->body.substr(0, 200) << "..." << std::endl;
+                }
+            } else {
+                error_msg += " - No response received";
+                std::cout << "❌ " << error_msg << std::endl;
+            }
             return false;
         }
+
+        std::cout << "✅ API response received successfully" << std::endl;
+        std::cout << "   Status: " << res->status << std::endl;
+        std::cout << "   Content-Length: " << res->get_header_value("Content-Length") << std::endl;
+        std::cout << "   Content-Type: " << res->get_header_value("Content-Type") << std::endl;
 
         // Parse the JSON response
         rapidjson::Document doc;
         if (doc.Parse(res->body.c_str()).HasParseError()) {
             error_info = "Failed to parse JSON response";
-            return {};
+            std::cout << "❌ " << error_info << std::endl;
+            std::cout << "   Parse error at position: " << doc.GetErrorOffset() << std::endl;
+            std::cout << "   Response preview: " << res->body.substr(0, 200) << "..." << std::endl;
+            return false;
         }
+
+        std::cout << "✅ JSON parsed successfully" << std::endl;
 
         // Extract fields
         if (doc.HasMember("modelId") && doc["modelId"].IsString()) {
             repo_info.model_id = doc["modelId"].GetString();
+            std::cout << "   Model ID: " << repo_info.model_id << std::endl;
+        } else {
+            std::cout << "⚠️  Missing or invalid modelId field" << std::endl;
         }
+        
         if (doc.HasMember("sha") && doc["sha"].IsString()) {
             repo_info.sha = doc["sha"].GetString();
+            std::cout << "   SHA: " << repo_info.sha << std::endl;
+        } else {
+            std::cout << "⚠️  Missing or invalid sha field" << std::endl;
         }
+        
         if (doc.HasMember("revision") && doc["revision"].IsString()) {
             repo_info.revision = doc["revision"].GetString();
+            std::cout << "   Revision: " << repo_info.revision << std::endl;
+        } else {
+            std::cout << "⚠️  Missing or invalid revision field" << std::endl;
         }
+        
         if (doc.HasMember("siblings") && doc["siblings"].IsArray()) {
             const rapidjson::Value& siblings = doc["siblings"];
+            std::cout << "   Siblings array size: " << siblings.Size() << std::endl;
+            
             for (rapidjson::Value::ConstValueIterator it = siblings.Begin(); it != siblings.End(); ++it) {
                 if (it->IsObject() && it->HasMember("rfilename") && (*it)["rfilename"].IsString()) {
                     repo_info.siblings.emplace_back((*it)["rfilename"].GetString());
                 }
             }
+            std::cout << "   Valid siblings found: " << repo_info.siblings.size() << std::endl;
+        } else {
+            std::cout << "⚠️  Missing or invalid siblings field" << std::endl;
         }
 
         return true;
@@ -156,9 +210,11 @@ mnncli::RepoInfo HfApiClient::GetRepoInfo(
 
     if (!HfApiClient::PerformRequestWithRetry(request_func, 3, 1)) {
         error_info = "Failed to fetch repository info after retries";
+        std::cout << "❌ " << error_info << std::endl;
         return {};
     }
 
+    std::cout << "✅ Repository info retrieved successfully" << std::endl;
     return repo_info;
 }
 

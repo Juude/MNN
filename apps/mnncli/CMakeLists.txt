@@ -9,6 +9,10 @@ if (BUILD_MNNCLI)
             ${CMAKE_CURRENT_LIST_DIR}/src/file_utils.cpp
             ${CMAKE_CURRENT_LIST_DIR}/src/llm_benchmark.cpp
             ${CMAKE_CURRENT_LIST_DIR}/src/hf_api_client.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/src/ms_api_client.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/src/ms_model_downloader.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/src/ml_model_downloader.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/src/ml_api_client.cpp
             ${CMAKE_CURRENT_LIST_DIR}/src/mnncli_server.cpp
     )
     
@@ -36,38 +40,42 @@ if (BUILD_MNNCLI)
         # Link to OpenSSL libraries
         target_link_libraries(mnncli PRIVATE ${OPENSSL_LIBRARIES})
 
-            # If on Apple platform, link with Security framework and Core Foundation
-    if(APPLE)
-        find_library(SECURITY_FRAMEWORK Security)
-        find_library(CORE_FOUNDATION_FRAMEWORK CoreFoundation)
-        if(SECURITY_FRAMEWORK)
-            target_link_libraries(mnncli PRIVATE ${SECURITY_FRAMEWORK})
-        else()
-            message(FATAL_ERROR "Could not find Security framework")
+        # If on Apple platform, link with Security framework and Core Foundation
+        if(APPLE)
+            find_library(SECURITY_FRAMEWORK Security)
+            find_library(CORE_FOUNDATION_FRAMEWORK CoreFoundation)
+            if(SECURITY_FRAMEWORK)
+                target_link_libraries(mnncli PRIVATE ${SECURITY_FRAMEWORK})
+            else()
+                message(FATAL_ERROR "Could not find Security framework")
+            endif()
+            if(CORE_FOUNDATION_FRAMEWORK)
+                target_link_libraries(mnncli PRIVATE ${CORE_FOUNDATION_FRAMEWORK})
+            else()
+                message(FATAL_ERROR "Could not find CoreFoundation framework")
+            endif()
         endif()
-        if(CORE_FOUNDATION_FRAMEWORK)
-            target_link_libraries(mnncli PRIVATE ${CORE_FOUNDATION_FRAMEWORK})
-        else()
-            message(FATAL_ERROR "Could not find CoreFoundation framework")
-        endif()
-    endif()
     else()
         message(FATAL_ERROR "OpenSSL not found. Please install OpenSSL and set paths.")
     endif()
 
-    target_include_directories(mnncli PRIVATE ${MNN_INCLUDES} ${CMAKE_CURRENT_LIST_DIR}/include/ ${CMAKE_CURRENT_LIST_DIR}/../../include/ ${CMAKE_CURRENT_LIST_DIR}/../../transformers/llm/engine/src/ ${CMAKE_CURRENT_LIST_DIR}/../../3rd_party/)
+    # Use MNN project's standard include directories and dependencies
+    target_include_directories(mnncli PRIVATE 
+        ${MNN_INCLUDES} 
+        ${CMAKE_CURRENT_LIST_DIR}/include/ 
+        ${CMAKE_CURRENT_LIST_DIR}/../../include/ 
+        ${CMAKE_CURRENT_LIST_DIR}/../../transformers/llm/engine/src/ 
+        ${CMAKE_CURRENT_LIST_DIR}/../../3rd_party/
+        ${CMAKE_CURRENT_LIST_DIR}/../frameworks/3rd_party/include/
+    )
+    
     set_property(TARGET mnncli PROPERTY CXX_STANDARD 17)
     set_property(TARGET mnncli PROPERTY CXX_STANDARD_REQUIRED ON)
     
     # Enable exceptions for mnncli (override global -fno-exceptions)
     target_compile_options(mnncli PRIVATE -fexceptions)
     
-    # Add library paths for pre-built libraries
-    target_link_directories(mnncli PRIVATE 
-        ${CMAKE_CURRENT_LIST_DIR}/../../build_mac_metal/lib
-        ${CMAKE_CURRENT_LIST_DIR}/../../build_mac_metal
-    )
-    
+    # Link to MNN libraries - these will be built as part of the same project
     target_link_libraries(mnncli PRIVATE ${MNN_DEPS} MNN llm)
     target_compile_definitions(mnncli PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT)
 endif()
