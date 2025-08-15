@@ -5,7 +5,8 @@ if (BUILD_MNNCLI)
 
     add_executable(mnncli
             ${CMAKE_CURRENT_LIST_DIR}/src/mnncli.cpp
-            ${CMAKE_CURRENT_LIST_DIR}/src/remote_model_downloader.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/src/log_utils.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/src/model_file_downloader.cpp
             ${CMAKE_CURRENT_LIST_DIR}/src/file_utils.cpp
             ${CMAKE_CURRENT_LIST_DIR}/src/llm_benchmark.cpp
             ${CMAKE_CURRENT_LIST_DIR}/src/hf_api_client.cpp
@@ -14,6 +15,12 @@ if (BUILD_MNNCLI)
             ${CMAKE_CURRENT_LIST_DIR}/src/ml_model_downloader.cpp
             ${CMAKE_CURRENT_LIST_DIR}/src/ml_api_client.cpp
             ${CMAKE_CURRENT_LIST_DIR}/src/mnncli_server.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/src/model_repo_downloader.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/src/hf_file_metadata_utils.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/src/hf_model_downloader.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/src/hf_sha_verifier.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/src/model_download_manager.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/src/model_repository.cpp
     )
     
     # Set OpenSSL_FOUND based on the presence of include directory and libraries
@@ -78,4 +85,7 @@ if (BUILD_MNNCLI)
     # Link to MNN libraries - these will be built as part of the same project
     target_link_libraries(mnncli PRIVATE ${MNN_DEPS} MNN llm)
     target_compile_definitions(mnncli PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT)
+    
+    # Add test directory
+    add_subdirectory(test)
 endif()

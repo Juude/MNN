@@ -24,13 +24,6 @@ struct RepoItem {
     std::vector<std::string> tags;
 };
 
-struct HfFileMetadata {
-    std::string commit_hash;
-    std::string location;
-    std::string etag;
-    size_t size;
-};
-
 //a benchmark referenced llama.cpp
 class HfApiClient {
 public:
@@ -47,13 +40,16 @@ public:
                      std::string& error_info);
 
     void DownloadRepo(const RepoInfo& repo_info);
+    
+    // Get the host
+    std::string GetHost() const;
 
 private:
     std::vector<RepoItem> SearchReposInner(const std::string& keyword, std::string& error_info);
 
     int max_attempts_{3};
     int retry_delay_seconds_{1};
-    std::string host_{"hf-mirror.com"};
+    std::string host_{"huggingface.co"};
     std::string cache_path_{};
 
 };

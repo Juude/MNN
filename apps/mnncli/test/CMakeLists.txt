@@ -1,9 +1,10 @@
-option(BUILD_MNNCLI_TEST "Build MNNCLI test programs." OFF)
-
-if (BUILD_MNNCLI_TEST)
+# Build MNNCLI test programs when BUILD_MNNCLI is enabled
+if (BUILD_MNNCLI)
     add_executable(ms_model_downloader_test
             ms_model_downloader_test.cpp
     )
+    
+
     
     # Set OpenSSL_FOUND based on the presence of include directory and libraries
     set(OPENSSL_USE_STATIC_LIBS TRUE)
@@ -54,6 +55,7 @@ if (BUILD_MNNCLI_TEST)
         ${CMAKE_CURRENT_LIST_DIR}/../../../include/ 
         ${CMAKE_CURRENT_LIST_DIR}/../../../3rd_party/
         ${CMAKE_CURRENT_LIST_DIR}/../../frameworks/3rd_party/include/
+        ${CMAKE_CURRENT_LIST_DIR}/../../../transformers/llm/engine/src/
     )
     
     set_property(TARGET ms_model_downloader_test PROPERTY CXX_STANDARD 17)
@@ -65,4 +67,6 @@ if (BUILD_MNNCLI_TEST)
     # Link to required libraries
     target_link_libraries(ms_model_downloader_test PRIVATE ${MNN_DEPS})
     target_compile_definitions(ms_model_downloader_test PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT)
+    
+
 endif()

@@ -3,7 +3,7 @@
 // This file tests that all includes and declarations are correct
 //
 
-#include "remote_model_downloader.hpp"
+#include "model_file_downloader.hpp"
 #include <iostream>
 
 int main() {

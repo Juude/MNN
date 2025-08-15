@@ -107,7 +107,7 @@ int main() {
                 const rapidjson::Value& files = data["Files"];
                 std::cout << "\n📁 Files array found with " << files.Size() << " elements:" << std::endl;
                 
-                for (rapidjson::Value::SizeType i = 0; i < files.Size(); i++) {
+                for (rapidjson::SizeType i = 0; i < files.Size(); i++) {
                     const rapidjson::Value& file = files[i];
                     if (file.IsObject()) {
                         std::cout << "   File " << i << ":" << std::endl;

@@ -12,12 +12,50 @@
 
 namespace mnncli {
 
-MlModelDownloader::MlModelDownloader(const std::string& cache_root_path) 
-    : cache_root_path_(GetCachePathRoot(cache_root_path)) {
+MlModelDownloader::MlModelDownloader(const std::string& cache_root_path)
+    : ModelRepoDownloader(cache_root_path), verbose_(false) {
     ml_api_client_ = std::make_unique<MlApiClient>();
 }
 
-bool MlModelDownloader::DownloadModel(const std::string& model_id, std::string& error_info) {
+// Implement pure virtual functions from ModelRepoDownloader base class
+void MlModelDownloader::download(const std::string& model_id) {
+    std::string error_info;
+    if (!DownloadModel(model_id, error_info, verbose_)) {
+        notifyDownloadFailed(model_id, error_info);
+    } else {
+        notifyDownloadFinished(model_id, GetDownloadPath(model_id).string());
+    }
+}
+
+void MlModelDownloader::pause(const std::string& model_id) {
+    addPausedModel(model_id);
+    notifyDownloadPaused(model_id);
+}
+
+void MlModelDownloader::resume(const std::string& model_id) {
+    removePausedModel(model_id);
+    download(model_id);
+}
+
+std::filesystem::path MlModelDownloader::getDownloadPath(const std::string& model_id) {
+    return GetDownloadPath(model_id);
+}
+
+bool MlModelDownloader::deleteRepo(const std::string& model_id) {
+    return DeleteRepo(model_id);
+}
+
+int64_t MlModelDownloader::getRepoSize(const std::string& model_id) {
+    std::string error_info;
+    return GetRepoSize(model_id, error_info);
+}
+
+bool MlModelDownloader::checkUpdate(const std::string& model_id) {
+    std::string error_info;
+    return CheckUpdate(model_id, error_info);
+}
+
+bool MlModelDownloader::DownloadModel(const std::string& model_id, std::string& error_info, bool verbose) {
     std::cout << "MlModelDownloader download: " << model_id << std::endl;
     
     try {

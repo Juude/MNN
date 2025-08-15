@@ -3,7 +3,7 @@
 // Copyright (c) 2024 Alibaba Group Holding Limited All rights reserved.
 //
 
-#include "remote_model_downloader.hpp"
+#include "model_file_downloader.hpp"
 #include <iostream>
 #include <filesystem>
 

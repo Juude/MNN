@@ -4,6 +4,7 @@
 //
 
 #include "file_utils.hpp"
+#include "log_utils.hpp"
 #include <stdexcept>
 #include <string>
 #include <sstream>
@@ -41,6 +42,10 @@ std::string FileUtils::GetPointerPath(const std::string& storage_folder, const s
     // Resolve to absolute paths
     const std::string abs_snapshot_path = GetAbsolutePath(snapshot_path);
     std::string abs_pointer_path = GetAbsolutePath(pointer_path);
+
+    LOG_DEBUG_TAG("GetPointerPath: Storage folder: " + storage_folder + ", Revision: " + revision + ", Relative filename: " + relative_filename, "FileUtils");
+    LOG_DEBUG_TAG("GetPointerPath: Snapshot path: " + snapshot_path + " -> " + abs_snapshot_path, "FileUtils");
+    LOG_DEBUG_TAG("GetPointerPath: Pointer path: " + pointer_path + " -> " + abs_pointer_path, "FileUtils");
 
     // Check if pointer path is within snapshot path
     if (!IsSubPath(abs_snapshot_path, abs_pointer_path)) {
@@ -85,15 +90,25 @@ std::string FileUtils::ExpandTilde(const std::string &path) {
 }
 
 fs::path FileUtils::GetPointerPathParent(const fs::path& storage_folder, const std::string& commit_hash) {
-    return storage_folder / "snapshots" / commit_hash;
+    auto pointer_path_parent = storage_folder / "snapshots" / commit_hash;
+    LOG_DEBUG_TAG("GetPointerPathParent: Storage folder: " + storage_folder.string() + ", Commit hash: " + commit_hash + " -> " + pointer_path_parent.string(), "FileUtils");
+    return pointer_path_parent;
 }
 
 fs::path FileUtils::GetPointerPath(const fs::path& storage_folder, const std::string& commit_hash, const fs::path& relative_filename) {
-    return storage_folder / "snapshots" / commit_hash / relative_filename;
+    auto pointer_path = storage_folder / "snapshots" / commit_hash / relative_filename;
+    LOG_DEBUG_TAG("GetPointerPath: Storage folder: " + storage_folder.string() + ", Commit hash: " + commit_hash + ", Relative filename: " + relative_filename.string() + " -> " + pointer_path.string(), "FileUtils");
+    return pointer_path;
 }
 
 void FileUtils::CreateSymlink(const fs::path& target, const fs::path& link, std::error_code& ec) {
+    LOG_DEBUG_TAG("CreateSymlink: Creating symlink from " + link.string() + " to " + target.string(), "FileUtils");
     fs::create_symlink(target, link, ec);
+    if (ec) {
+        LOG_DEBUG_TAG("CreateSymlink: Failed to create symlink from " + link.string() + " to " + target.string() + " - " + ec.message(), "FileUtils");
+    } else {
+        LOG_DEBUG_TAG("CreateSymlink: Successfully created symlink from " + link.string() + " to " + target.string(), "FileUtils");
+    }
 }
 
 std::string FileUtils::GetFileName(const std::string& path) {
@@ -107,7 +122,9 @@ std::string FileUtils::GetFolderLinkerPath(const std::string& model_id) {
 
 std::string FileUtils::GetStorageFolderPath(const std::string& model_id) {
     const auto repo_folder_name = RepoFolderName(model_id, "model");
-    return (fs::path(GetBaseCacheDir()) / repo_folder_name).string();
+    auto storage_folder_path = (fs::path(GetBaseCacheDir()) / repo_folder_name).string();
+    LOG_DEBUG_TAG("GetStorageFolderPath: Model ID: " + model_id + ", Repo folder name: " + repo_folder_name + " -> " + storage_folder_path, "FileUtils");
+    return storage_folder_path;
 }
 
 bool FileUtils::RemoveFileIfExists(const std::string& path) {
@@ -130,19 +147,7 @@ bool FileUtils::RemoveFileIfExists(const std::string& path) {
 }
 
 std::string FileUtils::GetBaseCacheDir() {
-    std::string cache_dir;
-
-#ifdef _WIN32
-    const char* home_dir = std::getenv("USERPROFILE");
-    if (home_dir) {
-        cache_dir = std::string(home_dir) + "\\" + kCachePath;
-    }
-#else
-    const char* home_dir = std::getenv("HOME");
-    if (home_dir) {
-        cache_dir = std::string(home_dir) + "/" + kCachePath;
-    }
-#endif
+    std::string cache_dir = ExpandTilde(kCachePath);
 
     if (cache_dir.empty()) {
         fprintf(stderr, "Unable to get home directory.");

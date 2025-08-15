@@ -1,0 +1,57 @@
+# MNN CLI Project Build Configuration
+
+## IMPORTANT: Pre-Coding Requirements
+**BEFORE writing any code, Cursor MUST:**
+1. **Write a detailed list of tasks** that need to be completed
+2. **Wait for user confirmation** before proceeding with any coding
+3. **Only start coding after** the user explicitly approves the task list
+4. **Build After Write Codes**
+5. **Use log_utils.hpp** for logging
+
+**This rule applies to ALL coding tasks, regardless of complexity.**
+
+## Build Instructions
+This project should be compiled using the build script located at:
+`/Users/songjinde/git/MNNX/MNN/apps/mnncli/build.sh`
+
+## Build Commands
+- **Main build**: `./build.sh`
+- **Clean build**: `./clean.sh`
+- **Android build**: `./build_android.sh`
+- **Multi-arch Android build**: `./build_android_multi_arch.sh`
+- **Integrated build**: `./build_integrated.sh`
+
+## Project Structure
+- **Source code**: `src/` directory
+- **Headers**: `include/` directory
+- **Tests**: `test/` directory
+- **Build system**: CMake-based
+
+
+## Code Style - Google C++ Style Guide
+
+### Formatting Rules
+- **Indentation**: Use 2 spaces for indentation (not tabs)
+- **Line length**: Maximum 80 characters per line
+- **Braces**: Use K&R style (opening brace on same line, closing brace on new line)
+- **Spacing**: No spaces around unary operators, spaces around binary operators
+- **Function declarations**: Return type on same line as function name
+- **Class declarations**: Opening brace on same line as class name
+
+### Naming Conventions
+- **Classes**: PascalCase (e.g., `ModelRepository`, `HfApiClient`)
+- **Functions**: snake_case (e.g., `set_download_provider`, `get_model_info`)
+- **Variables**: snake_case (e.g., `current_download_provider_`, `model_list_`)
+- **Constants**: kConstantName (e.g., `kMaxRetryCount`)
+- **Member variables**: snake_case with trailing underscore (e.g., `download_provider_`)
+
+### Comments
+- Use English comments
+
+## Debug Logging Practices
+- **Verbose Flag**: Always check for `-v` command line option to enable verbose logging
+- **Debug Logs**: Wrap all debug log statements with `if(verbose)` condition
+- **Log Format**: Use consistent debug log format: `if(verbose) { std::cout << "[DEBUG] " << message << std::endl; }`
+- **Performance**: Debug logs should not impact performance when verbose mode is disabled
+- **Log Levels**: Use appropriate log levels: DEBUG (verbose), INFO, WARNING, ERROR
+- **Conditional Compilation**: Consider using `#ifdef DEBUG` for extensive debug information

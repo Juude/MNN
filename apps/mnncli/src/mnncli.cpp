@@ -22,7 +22,9 @@
 #include <thread>
 #include <chrono>
 #include "file_utils.hpp"
-#include "remote_model_downloader.hpp"
+#include "model_download_manager.hpp"
+#include "model_repository.hpp"
+#include "model_file_downloader.hpp"
 #include "hf_api_client.hpp"
 #include "ms_api_client.hpp"
 #include "ms_model_downloader.hpp"
@@ -31,6 +33,7 @@
 #include "llm_benchmark.hpp"
 #include "mnncli_server.hpp"
 #include "nlohmann/json.hpp"
+#include "log_utils.hpp"
 
 using namespace MNN::Transformer;
 namespace fs = std::filesystem;
@@ -78,6 +81,67 @@ public:
     static void ShowInfo(const std::string& message) {
         std::cout << "ℹ️  " << message << std::endl;
     }
+};
+
+// CLI-specific download listener for user interface feedback
+class CLIDownloadListener : public mnncli::DownloadListener {
+public:
+    CLIDownloadListener() = default;
+    ~CLIDownloadListener() override = default;
+    
+    void onDownloadStart(const std::string& model_id) override {
+        UserInterface::ShowInfo("Starting download: " + model_id);
+    }
+    
+    void onDownloadProgress(const std::string& model_id, const mnncli::DownloadProgress& progress) override {
+        std::string stage_info = progress.stage;
+        if (!progress.current_file.empty()) {
+            stage_info += " - " + progress.current_file;
+        }
+        
+        std::string size_info;
+        if (progress.total_size > 0) {
+            size_info = " (" + mnncli::LogUtils::formatFileSize(progress.saved_size) + " / " + mnncli::LogUtils::formatFileSize(progress.total_size) + ")";
+        } else {
+            size_info = " (" + mnncli::LogUtils::formatFileSize(progress.saved_size) + ")";
+        }
+        
+        std::string message = "Downloading " + model_id + " - " + stage_info + size_info;
+        UserInterface::ShowProgress(message, progress.progress);
+    }
+    
+    void onDownloadFinished(const std::string& model_id, const std::string& path) override {
+        UserInterface::ShowSuccess("Download completed: " + model_id);
+        UserInterface::ShowInfo("Model saved to: " + path);
+    }
+    
+    void onDownloadFailed(const std::string& model_id, const std::string& error) override {
+        UserInterface::ShowError("Download failed: " + model_id + " - " + error);
+    }
+    
+    void onDownloadPaused(const std::string& model_id) override {
+        UserInterface::ShowInfo("Download paused: " + model_id);
+    }
+    
+    void onDownloadTaskAdded() override {
+        UserInterface::ShowInfo("Download task added");
+    }
+    
+    void onDownloadTaskRemoved() override {
+        UserInterface::ShowInfo("Download task removed");
+    }
+    
+    void onRepoInfo(const std::string& model_id, int64_t last_modified, int64_t repo_size) override {
+        if (repo_size > 0) {
+            UserInterface::ShowInfo("Repository info for " + model_id + ": " + mnncli::LogUtils::formatFileSize(repo_size));
+        }
+    }
+    
+    std::string getClassTypeName() const override {
+        return "CLIDownloadListener";
+    }
+    
+
 };
 
 // Configuration management
@@ -221,15 +285,15 @@ namespace ConfigManager {
     
     static void ShowConfig(const Config& config) {
         std::cout << "Configuration:\n";
-        std::cout << "  Default Model: " << (config.default_model.empty() ? "Not set" : config.default_model) << "\n";
-        std::cout << "  Cache Directory: " << config.cache_dir << "\n";
-        std::cout << "  Log Level: " << config.log_level << "\n";
-        std::cout << "  Default Max Tokens: " << config.default_max_tokens << "\n";
-        std::cout << "  Default Temperature: " << config.default_temperature << "\n";
-        std::cout << "  API Host: " << config.api_host << "\n";
-        std::cout << "  API Port: " << config.api_port << "\n";
-        std::cout << "  API Workers: " << config.api_workers << "\n";
-        std::cout << "  Download Provider: " << config.download_provider << "\n";
+        std::cout << "  Default Model(default_model): " << (config.default_model.empty() ? "Not set" : config.default_model) << "\n";
+        std::cout << "  Cache Directory(cache_dir): " << config.cache_dir << "\n";
+        std::cout << "  Log Level(log_level): " << config.log_level << "\n";
+        std::cout << "  Default Max Tokens(default_max_tokens): " << config.default_max_tokens << "\n";
+        std::cout << "  Default Temperature(default_temperature): " << config.default_temperature << "\n";
+        std::cout << "  API Host(api_host): " << config.api_host << "\n";
+        std::cout << "  API Port(api_port): " << config.api_port << "\n";
+        std::cout << "  API Workers(api_workers): " << config.api_workers << "\n";
+        std::cout << "  Download Provider(download_provider): " << config.download_provider << "\n";
     }
     
     static bool SetConfigValue(Config& config, const std::string& key, const std::string& value) {
@@ -350,11 +414,31 @@ class ModelManager {
 public:
     static int ListLocalModels() {
         std::vector<std::string> model_names;
-        int result = list_local_models(mnncli::FileUtils::GetBaseCacheDir(), model_names);
+        std::string base_cache_dir = mnncli::FileUtils::GetBaseCacheDir();
         
+        // List models from base cache directory
+        int result = list_local_models(base_cache_dir, model_names);
         if (result != 0) {
-            UserInterface::ShowError("Failed to list local models");
+            UserInterface::ShowError("Failed to list local models from base directory");
             return result;
+        }
+        
+        // List models from modelscope subdirectory
+        std::string modelscope_dir = base_cache_dir + "/modelscope";
+        std::vector<std::string> modelscope_models;
+        if (list_local_models(modelscope_dir, modelscope_models) == 0) {
+            for (auto& name : modelscope_models) {
+                model_names.emplace_back("modelscope/" + name);
+            }
+        }
+        
+        // List models from modelers subdirectory
+        std::string modelers_dir = base_cache_dir + "/modelers";
+        std::vector<std::string> modelers_models;
+        if (list_local_models(modelers_dir, modelers_models) == 0) {
+            for (auto& name : modelers_models) {
+                model_names.emplace_back("modelers/" + name);
+            }
         }
         
         if (!model_names.empty()) {
@@ -370,59 +454,83 @@ public:
         return 0;
     }
     
-    static int SearchRemoteModels(const std::string& keyword) {
-        if (keyword.empty()) {
-            UserInterface::ShowError("Search keyword is required", "Usage: mnncli model search <keyword>");
-            return 1;
-        }
-        
+    static int SearchRemoteModels(const std::string& keyword, bool verbose = false) {
         try {
-            // Use SimpleModelSearcher for enhanced search capabilities
-            mnncli::SimpleModelSearcher searcher;
-            
-            // Get preferred source from environment or use default
-            std::string preferredSource = "";
-            if (const char* source = std::getenv("MNN_DOWNLOAD_SOURCE")) {
-                preferredSource = source;
+            // Get cache directory from config or use default
+            auto config = ConfigManager::LoadDefaultConfig();
+            std::string cache_dir = config.cache_dir;
+            if (cache_dir.empty()) {
+                cache_dir = mnncli::FileUtils::GetBaseCacheDir() + "/.mnnmodels";
             }
             
-            auto models = searcher.SearchModels(keyword, preferredSource);
-            
-            if (models.empty()) {
-                std::cout << "No models found for keyword: " << keyword << "\n";
-                return 0;
+            // Get current download provider from config
+            std::string current_provider = config.download_provider;
+            if (current_provider.empty()) {
+                current_provider = "HuggingFace"; // Default provider
             }
             
-            std::cout << "Found " << models.size() << " models:\n";
-            for (auto& model : models) {
-                std::cout << "  🔍 " << model.modelName;
-                if (!model.vendor.empty()) {
-                    std::cout << " (" << model.vendor << ")";
+            // Create ModelRepository instance
+            auto& model_repo = mnncli::ModelRepository::getInstance(cache_dir);
+            model_repo.setDownloadProvider(current_provider);
+            
+            // Show search information
+            std::cout << "🔍 Searching for LLM models with keyword: '" << keyword << "'\n";
+            std::cout << "   Current provider: " << current_provider << "\n";
+            std::cout << "   Cache directory: " << cache_dir << "\n\n";
+            
+            LOG_DEBUG_TAG("Starting model search", "ModelSearch");
+            LOG_DEBUG_TAG("Keyword: " + keyword, "ModelSearch");
+            LOG_DEBUG_TAG("Provider: " + current_provider, "ModelSearch");
+            LOG_DEBUG_TAG("Cache directory: " + cache_dir, "ModelSearch");
+            
+            // Perform search
+            auto searchResults = model_repo.searchModels(keyword);
+            
+            if (searchResults.empty()) {
+                if (keyword.empty()) {
+                    std::cout << "No LLM models found for provider: " << current_provider << "\n";
+                } else {
+                    std::cout << "No LLM models found matching keyword: '" << keyword << "' for provider: " << current_provider << "\n";
                 }
-                if (model.sizeB > 0) {
-                    std::cout << " [" << model.sizeB << "B]";
-                }
-                if (!model.currentSource.empty()) {
-                    std::cout << " - " << model.currentSource;
-                }
-                if (model.fileSize > 0) {
-                    std::cout << " - " << (model.fileSize / (1024*1024*1024.0)) << "GB";
-                }
-                std::cout << "\n";
+                std::cout << "\n💡 Try:\n";
+                std::cout << "  • Use a different keyword\n";
+                std::cout << "  • Change download provider: export MNN_DOWNLOAD_PROVIDER=<provider>\n";
+                std::cout << "  • Available providers: HuggingFace, ModelScope, Modelers\n";
+            } else {
+                std::cout << "Found " << searchResults.size() << " matching LLM model(s):\n\n";
                 
-                // Show tags if available
-                if (!model.tags.empty()) {
-                    std::cout << "     Tags: ";
-                    for (size_t i = 0; i < std::min(model.tags.size(), size_t(5)); ++i) {
-                        if (i > 0) std::cout << ", ";
-                        std::cout << model.tags[i];
+                // Display results in a table format
+                std::cout << std::left << std::setw(30) << "Model Name" 
+                          << std::setw(15) << "Vendor" 
+                          << std::setw(10) << "Size (GB)" 
+                          << std::setw(20) << "Tags" 
+                          << std::setw(50) << "Model ID" << "\n";
+                std::cout << std::string(125, '-') << "\n";
+                
+                for (const auto& model : searchResults) {
+                    // Format tags for display
+                    std::string tags_str;
+                    if (!model.tags.empty()) {
+                        tags_str = model.tags[0]; // Show first tag
+                        if (model.tags.size() > 1) {
+                            tags_str += " (+" + std::to_string(model.tags.size() - 1) + ")";
+                        }
                     }
-                    if (model.tags.size() > 5) std::cout << "...";
-                    std::cout << "\n";
+                    
+                    // Format size
+                    std::string size_str = model.size_gb > 0 ? std::to_string(model.size_gb) + " GB" : "N/A";
+                    
+                    std::cout << std::left << std::setw(30) << model.modelName.substr(0, 29)
+                              << std::setw(15) << model.vendor.substr(0, 14)
+                              << std::setw(10) << size_str
+                              << std::setw(20) << tags_str.substr(0, 19)
+                              << std::setw(50) << model.modelId.substr(0, 49) << "\n";
                 }
+                
+                std::cout << "\n💡 To download a model, use:\n";
+                std::cout << "  mnncli model download <model_name>\n";
+                std::cout << "  Example: mnncli model download " << searchResults[0].modelName << "\n";
             }
-            
-            std::cout << "\nTo download a model, use: mnncli model download <model_name>\n";
             
         } catch (const std::exception& e) {
             UserInterface::ShowError("Failed to search models: " + std::string(e.what()));
@@ -446,200 +554,118 @@ public:
         std::cout << "Using download provider: " << config.download_provider << "\n";
         
         try {
-            // Create downloader with appropriate provider
-            std::string host;
-            std::string provider_name;
-            mnncli::DownloadProvider provider_enum;
-            
-            if (config.download_provider == "modelscope" || config.download_provider == "ms") {
-                host = "modelscope.cn";
-                provider_name = "ModelScope";
-                provider_enum = mnncli::DownloadProvider::MODELSCOPE;
-                std::cout << "🌐 Downloading from ModelScope (modelscope.cn)\n";
-                std::cout << "   ModelScope is Alibaba's AI model platform\n";
-            } else if (config.download_provider == "modelers") {
-                host = "modelers.cn";
-                provider_name = "Modelers";
-                provider_enum = mnncli::DownloadProvider::MODELERS;
-                std::cout << "🌐 Downloading from Modelers (modelers.cn)\n";
-                std::cout << "   Modelers is a community-driven model platform\n";
-            } else {
-                host = "hf-mirror.com";
-                provider_name = "HuggingFace";
-                provider_enum = mnncli::DownloadProvider::HUGGINGFACE;
-                std::cout << "🌐 Downloading from HuggingFace (hf-mirror.com)\n";
-                std::cout << "   HuggingFace is the leading AI model platform\n";
+            // Get cache directory from config or use default
+            std::string cache_dir = config.cache_dir;
+            if (cache_dir.empty()) {
+                cache_dir = mnncli::FileUtils::GetBaseCacheDir() + "/.mnnmodels";
             }
             
-            mnncli::RemoteModelDownloader downloader(host);
+            // Create download manager instance
+            auto& download_manager = mnncli::ModelDownloadManager::getInstance(cache_dir);
             
-            // Set the download provider in the downloader
-            downloader.SetDownloadProvider(provider_enum);
+            // Create CLI download listener for user feedback
+            CLIDownloadListener cli_listener;
+            download_manager.addListener(&cli_listener);
             
-            std::cout << "🔧 Downloader configured for " << provider_name << "\n";
-            std::cout << "📡 Target host: " << host << "\n";
+            // Use ModelRepository to get the correct model ID for download
+            std::string model_id;
+            std::string source = config.download_provider;
             
-            std::string error_info;
-            std::string repo_name = model_name;
+            // Log download information
+            LOG_DEBUG_TAG("Starting model download", "ModelManager");
+            LOG_DEBUG_TAG("Model name: " + model_name, "ModelManager");
+            LOG_DEBUG_TAG("Source: " + source, "ModelManager");
+            LOG_DEBUG_TAG("Cache directory: " + cache_dir, "ModelManager");
             
-            // 首先尝试从 model market 中查找模型信息，获取正确的 repo 路径
-            mnncli::SimpleModelSearcher searcher;
-            auto search_results = searcher.SearchModels(model_name);
-            
-            if (!search_results.empty()) {
-                // 找到了模型，根据选择的下载源从 sources 中获取正确的 repo 路径
-                const auto& model = search_results[0];
-                if (!model.sources.empty()) {
-                    std::string source_key;
-                    switch (provider_enum) {
-                        case mnncli::DownloadProvider::HUGGINGFACE:
-                            source_key = "HuggingFace";
-                            break;
-                        case mnncli::DownloadProvider::MODELSCOPE:
-                            source_key = "ModelScope";
-                            break;
-                        case mnncli::DownloadProvider::MODELERS:
-                            source_key = "Modelers";
-                            break;
+            // If no source specified in config, try to detect from model name
+            if (source.empty()) {
+                if (model_name.find("hf:") == 0 || model_name.find("huggingface:") == 0) {
+                    source = "HuggingFace";
+                    model_id = model_name.substr(model_name.find(":") + 1);
+                } else if (model_name.find("ms:") == 0 || model_name.find("modelscope:") == 0) {
+                    source = "ModelScope";
+                    model_id = model_name.substr(model_name.find(":") + 1);
+                } else if (model_name.find("ml:") == 0 || model_name.find("modelers:") == 0) {
+                    source = "Modelers";
+                    model_id = model_name.substr(model_name.find(":") + 1);
+                } else {
+                    // Try to use ModelRepository to find the model
+                    try {
+                        auto& model_repo = mnncli::ModelRepository::getInstance(cache_dir);
+                        model_repo.setDownloadProvider("HuggingFace"); // Default to HuggingFace
+                        
+                        auto model_id_opt = model_repo.getModelIdForDownload(model_name, "HuggingFace");
+                        if (model_id_opt) {
+                            model_id = *model_id_opt;
+                            source = "HuggingFace";
+                            std::cout << "✓ Found model in repository: " << model_id << "\n";
+                        } else {
+                            // Fallback to default behavior
+                            source = "HuggingFace";
+                            model_id = model_name;
+                        }
+                    } catch (const std::exception& e) {
+                        LOG_DEBUG_TAG("Failed to use ModelRepository: " + std::string(e.what()), "ModelManager");
+                        // Fallback to default behavior
+                        source = "HuggingFace";
+                        model_id = model_name;
                     }
+                }
+            } else {
+                // Source is specified, try to use ModelRepository
+                try {
+                    auto& model_repo = mnncli::ModelRepository::getInstance(cache_dir);
+                    model_repo.setDownloadProvider(source);
                     
-                    auto it = model.sources.find(source_key);
-                    if (it != model.sources.end()) {
-                        repo_name = it->second;
-                        std::cout << "📋 Found model in market: " << model.modelName << "\n";
-                        std::cout << "🔗 Using repo path for " << source_key << ": " << repo_name << "\n";
-                    }
-                }
-            } else {
-                // 没找到模型，使用默认逻辑
-                if (repo_name.find('/') == std::string::npos) {
-                    if (provider_enum == mnncli::DownloadProvider::MODELSCOPE || 
-                        provider_enum == mnncli::DownloadProvider::MODELERS) {
-                        repo_name = "MNN/" + repo_name;
+                    auto model_id_opt = model_repo.getModelIdForDownload(model_name, source);
+                    if (model_id_opt) {
+                        model_id = *model_id_opt;
+                        std::cout << "✓ Found model in repository: " << model_id << "\n";
+                        
+                        // Get model type for additional info
+                        std::string model_type = model_repo.getModelType(model_id);
+                        std::cout << "  Model type: " << model_type << "\n";
                     } else {
-                        repo_name = "taobao-mnn/" + repo_name;
+                        // Fallback to direct model name
+                        model_id = model_name;
+                        std::cout << "⚠ Model not found in repository, using direct name: " << model_id << "\n";
                     }
+                } catch (const std::exception& e) {
+                    LOG_DEBUG_TAG("Failed to use ModelRepository: " + std::string(e.what()), "ModelManager");
+                    // Fallback to direct model name
+                    model_id = model_name;
                 }
             }
             
-            // Parse owner/repo from the repo_name
-            size_t slash_pos = repo_name.find('/');
-            if (slash_pos == std::string::npos) {
-                UserInterface::ShowError("Invalid model format", "Model name should be in format: owner/repo");
+            // Show download information
+            std::cout << "🌐 Downloading from " << source << "\n";
+            std::cout << "   Target model: " << model_id << "\n";
+            std::cout << "   Cache directory: " << cache_dir << "\n";
+            
+            // Start the download
+            download_manager.startDownload(model_id, source, model_name);
+            
+            // Wait for download to complete or fail
+            while (download_manager.isDownloading(model_id)) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+            
+            // Check final status
+            auto download_info = download_manager.getDownloadInfo(model_id);
+            if (download_info.state == mnncli::DownloadState::COMPLETED) {
+                auto downloaded_file = download_manager.getDownloadedFile(model_id);
+                if (!downloaded_file.empty() && std::filesystem::exists(downloaded_file)) {
+                    UserInterface::ShowSuccess("Model downloaded successfully!");
+                    UserInterface::ShowInfo("Model saved to: " + downloaded_file.string());
+                    return 0;
+                }
+            } else if (download_info.state == mnncli::DownloadState::FAILED) {
+                UserInterface::ShowError("Download failed. Check the error messages above.");
                 return 1;
             }
             
-            std::string owner = repo_name.substr(0, slash_pos);
-            std::string repo = repo_name.substr(slash_pos + 1);
-            
-            if (verbose) {
-                std::cout << "🔍 Parsed model info:\n";
-                std::cout << "   Owner: " << owner << "\n";
-                std::cout << "   Repository: " << repo << "\n";
-                std::cout << "   Full name: " << repo_name << "\n";
-            }
-            
-            // For ModelScope, we need to use the ModelScope API directly
-            if (provider_enum == mnncli::DownloadProvider::MODELSCOPE) {
-                std::cout << "📡 Fetching repository info from ModelScope API...\n";
-                
-                if (verbose) {
-                    std::cout << "   Owner: " << owner << "\n";
-                    std::cout << "   Repository: " << repo << "\n";
-                    std::cout << "   Full name: " << repo_name << "\n";
-                }
-                
-                // Use the ModelScope API client
-                mnncli::MsApiClient ms_api_client;
-                const auto ms_repo_info = ms_api_client.GetRepoInfo(repo_name, "main", error_info);
-                if (!error_info.empty()) {
-                    UserInterface::ShowError("Failed to get repo info: " + error_info);
-                    return 1;
-                }
-                
-                std::cout << "📦 Repository info retrieved successfully from ModelScope\n";
-                std::cout << "   Model ID: " << ms_repo_info.model_id << "\n";
-                std::cout << "   Revision: " << ms_repo_info.revision << "\n";
-                std::cout << "   Files to download: " << ms_repo_info.files.size() << "\n";
-                
-                if (verbose) {
-                    std::cout << "   Files:\n";
-                    for (const auto& file : ms_repo_info.files) {
-                        std::cout << "     - " << file.path << " (" << file.size << " bytes, SHA256: " << file.sha256.substr(0, 8) << "...)\n";
-                    }
-                }
-                
-                // Download the model using ModelScope downloader
-                std::cout << "🚀 Starting ModelScope download...\n";
-                mnncli::MsModelDownloader ms_downloader(mnncli::FileUtils::GetBaseCacheDir());
-                std::string download_error;
-                if (!ms_downloader.DownloadModel(repo_name, download_error)) {
-                    UserInterface::ShowError("ModelScope download failed: " + download_error);
-                    return 1;
-                }
-                
-            } else if (provider_enum == mnncli::DownloadProvider::MODELERS) {
-                std::cout << "📡 Fetching repository info from Modelers API...\n";
-                
-                if (verbose) {
-                    std::cout << "   Model Group: " << owner << "\n";
-                    std::cout << "   Model Path: " << repo << "\n";
-                    std::cout << "   Full name: " << repo_name << "\n";
-                }
-                
-                // Use the Modelers API client
-                mnncli::MlApiClient ml_api_client;
-                const auto ml_repo_info = ml_api_client.GetRepoInfo(repo_name, "main", error_info);
-                if (!error_info.empty()) {
-                    UserInterface::ShowError("Failed to get repo info: " + error_info);
-                    return 1;
-                }
-                
-                std::cout << "📦 Repository info retrieved successfully from Modelers\n";
-                std::cout << "   Model ID: " << ml_repo_info.model_id << "\n";
-                std::cout << "   Revision: " << ml_repo_info.revision << "\n";
-                std::cout << "   Files to download: " << ml_repo_info.files.size() << "\n";
-                
-                if (verbose) {
-                    std::cout << "   Files:\n";
-                    for (const auto& file : ml_repo_info.files) {
-                        std::cout << "     - " << file.path << " (" << file.size << " bytes, SHA256: " << file.sha256.substr(0, 8) << "...)\n";
-                    }
-                }
-                
-                // Download the model using Modelers downloader
-                std::cout << "🚀 Starting Modelers download...\n";
-                mnncli::MlModelDownloader ml_downloader(mnncli::FileUtils::GetBaseCacheDir());
-                std::string download_error;
-                if (!ml_downloader.DownloadModel(repo_name, download_error)) {
-                    UserInterface::ShowError("Modelers download failed: " + download_error);
-                    return 1;
-                }
-                
-            } else {
-                // For HuggingFace and other providers, use the existing HfApiClient
-                std::cout << "📡 Fetching repository info from HuggingFace API...\n";
-                
-                mnncli::HfApiClient api_client;
-                const auto repo_info = api_client.GetRepoInfo(repo_name, "main", error_info);
-                if (!error_info.empty()) {
-                    UserInterface::ShowError("Failed to get repo info: " + error_info);
-                    return 1;
-                }
-                
-                std::cout << "📦 Repository info retrieved successfully\n";
-                std::cout << "   Model ID: " << repo_info.model_id << "\n";
-                std::cout << "   Revision: " << repo_info.revision << "\n";
-                std::cout << "   Commit SHA: " << repo_info.sha << "\n";
-                std::cout << "   Files to download: " << repo_info.siblings.size() << "\n";
-                
-                UserInterface::ShowProgress("Downloading model", 0.0f);
-                api_client.DownloadRepo(repo_info);
-                UserInterface::ShowProgress("Downloading model", 1.0f);
-            }
-            
-            UserInterface::ShowSuccess("Model downloaded successfully: " + model_name);
-            std::cout << "✅ Download completed using " << provider_name << " provider\n";
+            // Remove listener before returning
+            download_manager.removeListener(&cli_listener);
             
         } catch (const std::exception& e) {
             UserInterface::ShowError("Failed to download model: " + std::string(e.what()));
@@ -851,6 +877,8 @@ public:
             std::string arg = argv[i];
             if (arg == "-v" || arg == "--verbose") {
                 verbose_ = true;
+                // Set global verbose logging
+                mnncli::LogUtils::setVerbose(true);
                 // Remove the verbose flag from argv by shifting remaining args
                 for (int j = i; j < argc - 1; j++) {
                     argv[j] = argv[j + 1];
@@ -909,7 +937,7 @@ private:
                 UserInterface::ShowError("Search keyword required", "Usage: mnncli model search <keyword>");
                 return 1;
             }
-            return ModelManager::SearchRemoteModels(argv[3]);
+            return ModelManager::SearchRemoteModels(argv[3], verbose_);
         } else if (subcmd == "download") {
             if (argc < 4) {
                 UserInterface::ShowError("Model name required", "Usage: mnncli model download <name>");
@@ -1259,3 +1287,4 @@ int main(int argc, const char* argv[]) {
     CommandLineInterface cli;
     return cli.Run(argc, argv);
 }
+

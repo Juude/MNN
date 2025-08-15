@@ -6,6 +6,6 @@
 #pragma once
 
 namespace mnncli {
-   const char* const kCachePath = ".mnnmodels";
+   const char* const kCachePath = "~/.mnnmodels";
 
 }
