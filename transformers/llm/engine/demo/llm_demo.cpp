@@ -13,10 +13,34 @@
 #include <sstream>
 #include <stdlib.h>
 #include <initializer_list>
-//#define LLM_SUPPORT_AUDIO
+#include "llmconfig.hpp"
+#include <regex>
+#ifdef LLM_SUPPORT_VISION
+#include <opencv2/opencv.hpp>
+#endif
 #ifdef LLM_SUPPORT_AUDIO
 #include "audio/audio.hpp"
 #endif
+
+#ifdef LLM_SUPPORT_VISION
+MNN::Express::VARP mat_to_var(const cv::Mat& mat) {
+    // Ensure the mat is not empty
+    if (mat.empty()) {
+        MNN_ERROR("Input cv::Mat is empty!\n");
+        return nullptr;
+    }
+    // Only support CV_8UC3 for now
+    if (mat.type() != CV_8UC3) {
+        MNN_ERROR("Only support CV_8UC3 for mat_to_var!\n");
+        return nullptr;
+    }
+    auto var = MNN::Express::_Input({mat.rows, mat.cols, 3}, MNN::Express::NHWC, halide_type_of<uint8_t>());
+    auto ptr = var->writeMap<uint8_t>();
+    memcpy(ptr, mat.data, mat.total() * mat.elemSize());
+return var;
+}
+#endif
+
 using namespace MNN::Transformer;
 
 static void tuning_prepare(Llm* llm) {
@@ -71,11 +95,6 @@ std::vector<std::vector<std::string>> parse_csv(const std::vector<std::string>& 
 static int benchmark(Llm* llm, const std::vector<std::string>& prompts, int max_token_number) {
     int prompt_len = 0;
     int decode_len = 0;
-    int64_t vision_time = 0;
-    int64_t audio_time = 0;
-    int64_t prefill_time = 0;
-    int64_t decode_time = 0;
-    int64_t sample_time = 0;
     // llm->warmup();
     auto context = llm->getContext();
     if (max_token_number > 0) {
@@ -117,30 +136,8 @@ static int benchmark(Llm* llm, const std::vector<std::string>& prompts, int max_
         }
         prompt_len += context->prompt_len;
         decode_len += context->gen_seq_len;
-        vision_time += context->vision_us;
-        audio_time += context->audio_us;
-        prefill_time += context->prefill_us;
-        decode_time += context->decode_us;
-        sample_time += context->sample_us;
     }
     llm->generateWavform();
-
-    float vision_s = vision_time / 1e6;
-    float audio_s = audio_time / 1e6;
-    float prefill_s = prefill_time / 1e6;
-    float decode_s = decode_time / 1e6;
-    float sample_s = sample_time / 1e6;
-    printf("\n#################################\n");
-    printf("prompt tokens num = %d\n", prompt_len);
-    printf("decode tokens num = %d\n", decode_len);
-    printf(" vision time = %.2f s\n", vision_s);
-    printf("  audio time = %.2f s\n", audio_s);
-    printf("prefill time = %.2f s\n", prefill_s);
-    printf(" decode time = %.2f s\n", decode_s);
-    printf(" sample time = %.2f s\n", sample_s);
-    printf("prefill speed = %.2f tok/s\n", prompt_len / prefill_s);
-    printf(" decode speed = %.2f tok/s\n", decode_len / decode_s);
-    printf("##################################\n");
     return 0;
 }
 
@@ -187,6 +184,19 @@ static int ceval(Llm* llm, const std::vector<std::string>& lines, std::string fi
 
 static int eval(Llm* llm, std::string prompt_file, int max_token_number) {
     std::cout << "prompt file is " << prompt_file << std::endl;
+    std::string ext;
+    if (prompt_file.find_last_of(".") != std::string::npos) {
+        ext = prompt_file.substr(prompt_file.find_last_of(".") + 1);
+    }
+    if (ext == "mp4" || ext == "avi" || ext == "mov") {
+#ifdef LLM_SUPPORT_VISION
+        MNN_PRINT("Video file input via file argument is deprecated. Use `-p 'prompt:<video>/path/to/video.mp4</video>'` instead.\n");
+        return 1;
+#else
+        MNN_PRINT("LLM_SUPPORT_VISION is not enabled, can't process video file\n");
+        return 1;
+#endif
+    }
     std::ifstream prompt_fs(prompt_file);
     std::vector<std::string> prompts;
     std::string prompt;
@@ -219,8 +229,6 @@ static int eval(Llm* llm, std::string prompt_file, int max_token_number) {
 }
 
 void chat(Llm* llm) {
-    ChatMessages messages;
-    messages.emplace_back("system", "You are a helpful assistant.");
     auto context = llm->getContext();
     while (true) {
         std::cout << "\nUser: ";
@@ -234,16 +242,16 @@ void chat(Llm* llm) {
             std::cout << "\nA: reset done." << std::endl;
             continue;
         }
-        messages.emplace_back("user", user_str);
+        std::vector<std::pair<std::string, std::string>> messages = {{"user", user_str}};
         std::cout << "\nA: " << std::flush;
         llm->response(messages);
-        auto assistant_str = context->generate_str;
-        messages.emplace_back("assistant", assistant_str);
+        std::cout << std::endl;
     }
 }
+
 int main(int argc, const char* argv[]) {
     if (argc < 2) {
-        std::cout << "Usage: " << argv[0] << " config.json <prompt.txt>" << std::endl;
+        std::cout << "Usage: " << argv[0] << " config.json [prompt.txt] or -p \"prompt\"" << std::endl;
         return 0;
     }
     MNN::BackendConfig backendConfig;
@@ -262,28 +270,84 @@ int main(int argc, const char* argv[]) {
         AUTOTIME;
         tuning_prepare(llm.get());
     }
-    if (argc < 3) {
-        chat(llm.get());
-        return 0;
+    int max_new_tokens = -1;
+    // get max_new_tokens from config.json
+    auto config = llm->getConfig();
+    if (config) {
+        max_new_tokens = config->config_.value("max_new_tokens", max_new_tokens);
     }
-    int max_token_number = -1;
-    if (argc >= 4) {
-        std::istringstream os(argv[3]);
-        os >> max_token_number;
+    if (argc > 3) {
+        std::string prompt_arg = argv[2];
+        if (prompt_arg != "-p") {
+            std::istringstream os(argv[3]);
+            os >> max_new_tokens;
+        }
     }
-    if (argc >= 5) {
-        MNN_PRINT("Set not thinking, only valid for Qwen3\n");
-        llm->set_config(R"({
-            "jinja": {
-                "context": {
-                    "enable_thinking":false
+    
+    llm->set_config("{\"max_new_tokens\":1}");
+
+    if (argc > 2) {
+        std::string prompt_arg = argv[2];
+        if (prompt_arg == "-p") {
+            if (argc > 3) {
+                std::string prompt_str = argv[3];
+#ifdef LLM_SUPPORT_VISION
+                std::regex video_regex("<video>(.*?)</video>");
+                std::smatch match;
+                if (std::regex_search(prompt_str, match, video_regex)) {
+                    std::string video_path = match[1].str();
+                    std::string text_part = std::regex_replace(prompt_str, video_regex, "");
+                    
+                    cv::VideoCapture cap(video_path);
+                    if (!cap.isOpened()) {
+                        std::cerr << "Error: Failed to open video file: " << video_path << std::endl;
+                        return 1;
+                    }
+                    std::vector<MNN::Express::VARP> images;
+                    std::string final_prompt = text_part;
+                    double fps = cap.get(cv::CAP_PROP_FPS);
+                    int frame_count = cap.get(cv::CAP_PROP_FRAME_COUNT);
+                    int duration = frame_count / fps;
+                    int sample_rate = 2; // frames per second
+                    
+                    final_prompt += " The video has " + std::to_string(frame_count) + " frames, total " + std::to_string(duration) + " seconds. ";
+
+                    for (int i = 0; i < frame_count; ++i) {
+                        cv::Mat frame;
+                        cap.read(frame);
+                        if (frame.empty()) continue;
+
+                        if (i % static_cast<int>(fps / sample_rate) == 0) {
+                            int current_second = i / fps;
+                            char timestamp[16];
+                            snprintf(timestamp, sizeof(timestamp), "Frame at %02d:%02d: ", current_second / 60, current_second % 60);
+                            final_prompt += timestamp;
+                            final_prompt += "<img></img>";
+                            images.push_back(mat_to_var(frame));
+                        }
+                    }
+                    cap.release();
+                    std::cout << "Final prompt: " << final_prompt << std::endl;
+                    std::cout << "Read " << images.size() << " frames from video." << std::endl;
+                    MNN::AutoTime _t(0, "responseWithImages");
+                    llm->responseWithImages(final_prompt, images, &std::cout, nullptr, 9999);
+
+                } else {
+                    MNN::AutoTime _t(0, "response");
+                    llm->response(prompt_str, &std::cout, nullptr, max_new_tokens);
                 }
+#else
+                MNN::AutoTime _t(0, "response");
+                llm->response(prompt_str, &std::cout, nullptr, max_new_tokens);
+#endif
+                return 0;
+            } else {
+                MNN_PRINT("Error: -p flag requires a prompt string.\n");
+                return 1;
             }
-        })");
+        }
+        return eval(llm.get(), prompt_arg, max_new_tokens);
     }
-    std::string prompt_file = argv[2];
-    llm->set_config(R"({
-        "async":false
-    })");
-    return eval(llm.get(), prompt_file, max_token_number);
+    chat(llm.get());
+    return 0;
 }

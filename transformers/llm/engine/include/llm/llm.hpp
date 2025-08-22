@@ -112,9 +112,15 @@ public:
     bool is_stop(int token);
     std::string tokenizer_decode(int token);
     virtual std::vector<int> tokenizer_encode(const std::string& query);
+    virtual std::vector<int> tokenizer_encode_with_images(const std::string& user_content, const std::vector<MNN::Express::VARP>& images) { return {}; };
+    virtual void responseWithImages(const std::string& user_content, const std::vector<MNN::Express::VARP>& images,
+                           std::ostream* os = &std::cout, const char* end_with = nullptr, int max_new_tokens = -1) {};
     friend class Pipeline;
     const LlmContext* getContext() const {
         return mContext.get();
+    }
+    const LlmConfig* getConfig() const {
+        return mConfig.get();
     }
     virtual void setWavformCallback(std::function<bool(const float*, size_t, bool)> callback) {}
     virtual void generateWavform() {}

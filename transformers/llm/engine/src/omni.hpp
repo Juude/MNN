@@ -103,6 +103,9 @@ public:
         mAudioModule.reset();
     }
     virtual void load() override;
+    virtual std::vector<int> tokenizer_encode_with_images(const std::string& user_content, const std::vector<MNN::Express::VARP>& images) override;
+    virtual void responseWithImages(const std::string& user_content, const std::vector<MNN::Express::VARP>& images,
+                           std::ostream* os = &std::cout, const char* end_with = nullptr, int max_new_tokens = -1) override;
     virtual std::vector<Express::VARP> forwardRaw(Express::VARP hiddenState, Express::VARP mask, Express::VARP inputPos) override;
     virtual std::vector<int> tokenizer_encode(const std::string& query) override;
     virtual Express::VARP embedding(const std::vector<int>& input_ids) override;
@@ -125,8 +128,9 @@ private:
     std::vector<float> mVisionNorm{0.01459843, 0.01500777, 0.01422007};
     std::vector<int> multimodeProcess(const std::string& mode, std::string info);
     std::vector<int> visionProcess(const std::string& file);
+    std::vector<int> visionProcess(Express::VARP image);
     std::vector<int> audioProcess(const std::string& file);
-    std::shared_ptr<Module> mVisionModule, mAudioModule;
+        std::shared_ptr<Module> mVisionModule, mAudioModule;
     std::vector<VARP> mVisionEmbeddings, mAudioEmbeddings;
     std::shared_ptr<Talker> mTalker;
     // m_rope position ids
