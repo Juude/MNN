@@ -9,6 +9,7 @@
 #define _USE_MATH_DEFINES
 #endif
 #include <regex>
+#include <algorithm>
 #include <MNN/AutoTime.hpp>
 #include <MNN/expr/ExecutorScope.hpp>
 #include "omni.hpp"
@@ -576,8 +577,17 @@ void Omni::responseWithImages(const std::string& user_content, const std::vector
 std::vector<int> Omni::visionProcess(Express::VARP image) {
     MNN_PRINT("Omni visionProcess begin\n");
 #ifdef LLM_SUPPORT_VISION
+    VARP image = MNN::CV::imread(file);
+    return visionProcess(image);
+#else
+    return std::vector<int>(0);
+#endif
+}
+
+std::vector<int> Omni::visionProcess(VARP image) {
+#ifdef LLM_SUPPORT_VISION
     if (image == nullptr) {
-        MNN_PRINT("Omni Can't process null image VARP\n");
+        MNN_PRINT("Omni Can't open image\n");
         return std::vector<int>(0);
     }
     Timer _t;
@@ -594,7 +604,7 @@ std::vector<int> Omni::visionProcess(Express::VARP image) {
     } else {
         imgIds = defaultVisionProcess(image);
     }
-    mContext->vision_us = _t.durationInUs();
+    mContext->vision_us += _t.durationInUs();
     // set vision number for image idx
     mVisionNum += 1;
     return imgIds;
@@ -623,9 +633,19 @@ std::vector<int> Omni::audioProcess(const std::string& file) {
         MNN_PRINT("Omni Can't open audio: %s\n", file.c_str());
         return std::vector<int>(0);
     }
-    // int sample_rate      = load_res.second;
-    int wav_len          = waveform->getInfo()->dim[0];
-    int hop_length       = 160;
+    return audioProcess(waveform);
+#else
+    return std::vector<int>(0);
+#endif
+}
+
+std::vector<int> Omni::audioProcess(MNN::Express::VARP waveform) {
+#ifdef LLM_SUPPORT_AUDIO
+    if (waveform == nullptr) {
+        MNN_PRINT("Omni Can't process audio: waveform is null\n");
+        return std::vector<int>(0);
+    }
+    
     Timer _t;
     auto input_features  = MNN::AUDIO::whisper_fbank(waveform);
     VARP audio_embedding;
@@ -764,78 +784,30 @@ void Omni::addPositionIds(int t, int h, int w) {
     }
 }
 
-std::vector<int> Omni::tokenizer_encode_with_images(const std::string& user_content, const std::vector<MNN::Express::VARP>& images) {
-    std::regex multimode_regex("<(img)>(.*?)</\\1>");
-    std::string::const_iterator searchStart(user_content.cbegin());
-    std::smatch match;
-    std::vector<int> ids{};
-    int image_idx = 0;
-    mVisionEmbeddings.clear(); // Clear stale embeddings
-    mPositionIds.clear();
-    bool has_img_tag = std::regex_search(user_content, multimode_regex);
-    MNN_PRINT("tokenizer_encode_with_images: has_img_tag: %d, user_content: %s\n", has_img_tag, user_content.c_str());
-
-    if (has_img_tag) {
-        while (std::regex_search(searchStart, user_content.cend(), match, multimode_regex)) {
-            std::string prefix_str = match.prefix().str();
-            auto txt_ids = mTokenizer->encode(prefix_str);
-            MNN_PRINT("tokenizer_encode_with_images: Text prefix: \"%s\", %zu tokens\n", prefix_str.c_str(), txt_ids.size());
-            addPositionIds(txt_ids.size());
-            ids.insert(ids.end(), txt_ids.begin(), txt_ids.end());
-            if (image_idx < images.size()) {
-                MNN_PRINT("tokenizer_encode_with_images: Processing image %d\n", image_idx);
-                auto mul_ids = visionProcess(images[image_idx]);
-                MNN_PRINT("tokenizer_encode_with_images: Image %d generated %zu tokens\n", image_idx, mul_ids.size());
-                ids.insert(ids.end(), mul_ids.begin(), mul_ids.end());
-                image_idx++;
-            }
-            searchStart = match.suffix().first;
-        }
-        if (searchStart != user_content.cend()) {
-            std::string suffix_str = std::string(searchStart, user_content.cend());
-            auto txt_ids = mTokenizer->encode(suffix_str);
-            MNN_PRINT("tokenizer_encode_with_images: Text suffix: \"%s\", %zu tokens\n", suffix_str.c_str(), txt_ids.size());
-            addPositionIds(txt_ids.size());
-            ids.insert(ids.end(), txt_ids.begin(), txt_ids.end());
-        }
-        // append remaining images if any
-        for (int i = image_idx; i < images.size(); i++) {
-            MNN_PRINT("tokenizer_encode_with_images: Appending remaining image %d\n", i);
-            auto mul_ids = visionProcess(images[i]);
-            ids.insert(ids.end(), mul_ids.begin(), mul_ids.end());
-        }
-    } else {
-        // No <img> tag, prepend images
-        for (const auto& image : images) {
-            MNN_PRINT("tokenizer_encode_with_images: Prepending image %d\n", image_idx++);
-            auto mul_ids = visionProcess(image);
-            ids.insert(ids.end(), mul_ids.begin(), mul_ids.end());
-         }
-        auto txt_ids = mTokenizer->encode(user_content);
-        addPositionIds(txt_ids.size());
-        ids.insert(ids.end(), txt_ids.begin(), txt_ids.end());
-    }
-    MNN_PRINT("tokenizer_encode_with_images: Total tokens: %zu\n", ids.size());
-    return ids;
-}
-
-std::vector<int> Omni::tokenizer_encode(const std::string& prompt) {
-    MNN_PRINT("tokenizer_encode, prompt: %s\n", prompt.c_str());
-    // split query
+std::vector<int> Omni::tokenizer_encode(const MultimodalPrompt& multimodal_input) {
+    std::string prompt = multimodal_input.prompt_template;
+    // MNN_PRINT("tokenizer_encode(MultimodalPrompt) prompt: %s", prompt.c_str());
     std::regex multimode_regex("<(img|audio)>(.*?)</\\1>");
     std::string::const_iterator searchStart(prompt.cbegin());
     std::smatch match;
-    std::vector<std::string> img_infos;
     std::vector<int> ids{};
-
     mPositionIds.clear();
+    
     while (std::regex_search(searchStart, prompt.cend(), match, multimode_regex)) {
-        // std::cout << "img match: " << match[1].str() << std::endl;
-        MNN_PRINT("tokenizer_encode, found tag: <%s>, content: %s\n", match[1].str().c_str(), match[2].str().c_str());
         auto txt_ids = mTokenizer->encode(match.prefix().str());
         addPositionIds(txt_ids.size());
         ids.insert(ids.end(), txt_ids.begin(), txt_ids.end());
-        auto mul_ids = multimodeProcess(match[1].str(), match[2].str());
+        std::string mode = match[1].str();
+        std::string content = match[2].str();
+        std::vector<int> mul_ids;
+        if (mode == "img") {
+            mul_ids = processImageContent(content, multimodal_input.images);
+            // MNN_PRINT("tokenizer_encode(MultimodalPrompt) image mul_ids size: %lu", mul_ids.size());
+        } else if (mode == "audio") {
+            mul_ids = processAudioContent(content, multimodal_input.audios);
+            // MNN_PRINT("tokenizer_encode(MultimodalPrompt) audio mul_ids size: %lu", mul_ids.size());
+        }
+        
         ids.insert(ids.end(), mul_ids.begin(), mul_ids.end());
         searchStart = match.suffix().first;
     }
@@ -845,6 +817,43 @@ std::vector<int> Omni::tokenizer_encode(const std::string& prompt) {
         ids.insert(ids.end(), txt_ids.begin(), txt_ids.end());
     }
     return ids;
+}
+
+std::vector<int> Omni::tokenizer_encode(const std::string& prompt) {
+    MultimodalPrompt multimodal_input;
+    multimodal_input.prompt_template = prompt;
+    return tokenizer_encode(multimodal_input);
+}
+
+std::vector<int> Omni::processImageContent(const std::string& content, const std::map<std::string, PromptImagePart>& images) {
+    auto it = images.find(content);
+    if (it != images.end()) {
+        if (it->second.height > 0 && it->second.width > 0) {
+            mVisionHeight = it->second.height;
+            mVisionWidth = it->second.width;
+        }
+        // MNN_PRINT("processImageContent: using placeholder '%s' with size %dx%d", content.c_str(), mVisionWidth, mVisionHeight);
+        return visionProcess(it->second.image_data);
+    }
+    // MNN_PRINT("processImageContent: treating '%s' as file path or URL", content.c_str());
+    return multimodeProcess("img", content);
+}
+
+std::vector<int> Omni::processAudioContent(const std::string& content, const std::map<std::string, PromptAudioPart>& audios) {
+    auto it = audios.find(content);
+    if (it != audios.end()) {
+        // MNN_PRINT("processAudioContent: using placeholder '%s'", content.c_str());
+        if (it->second.waveform.get() != nullptr) {
+            return audioProcess(it->second.waveform);
+        } else if (!it->second.file_path.empty()) {
+            return audioProcess(it->second.file_path);
+        } else {
+            MNN_PRINT("processAudioContent: audio_part has no valid input\n");
+            return std::vector<int>(0);
+        }
+    }
+    // MNN_PRINT("processAudioContent: treating '%s' as file path", content.c_str());
+    return multimodeProcess("audio", content);
 }
 
 VARP Omni::embedding(const std::vector<int>& input_ids) {
@@ -939,21 +948,28 @@ VARP Omni::gen_position_ids(int seq_len) {
     auto ptr = positionIds->writeMap<int>();
     if (mContext->gen_seq_len > 0) {
         for (int i=0; i<seq_len; ++i) {
-            auto pos = mContext->gen_seq_len + mPositionIds.back() + i;
+            // auto pos = mContext->gen_seq_len + mPositionIds.back() + i;
+            auto pos = mContext->all_seq_len + i;
             ptr[i + 0] = pos;
             ptr[i + seq_len] = pos;
             ptr[i + seq_len * 2] = pos;
         }
     } else {
         for (int i = 0; i < seq_len; i++) {
-            ptr[i] = mPositionIds.mT[i];
-            ptr[i + seq_len] = mPositionIds.mH[i];
-            ptr[i + seq_len * 2] = mPositionIds.mW[i];
+            ptr[i] = mPositionIds.mT[i] + mContext->all_seq_len;
+            ptr[i + seq_len] = mPositionIds.mH[i] + mContext->all_seq_len;
+            ptr[i + seq_len * 2] = mPositionIds.mW[i] + mContext->all_seq_len;
         }
         if (mTalker) {
             mTalker->setPostionIds(mPositionIds);
         }
     }
+    // // dump position ids
+    // printf("position_ids = [");
+    // for (int i = 0; i < seq_len; i++) {
+    //     printf("%d ", ptr[i]);
+    // }
+    // printf("]\n");
     return positionIds;
 }
 
