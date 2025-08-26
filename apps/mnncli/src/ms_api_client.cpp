@@ -35,8 +35,12 @@ MsRepoInfo MsApiClient::GetRepoInfo(const std::string& repo_name, const std::str
     
     // Perform the API request
     auto request_func = [&]() -> bool {
-        // Make the HTTPS request to ModelScope
+        // Create HTTP client
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
         httplib::SSLClient cli(host_, 443);
+#else
+        httplib::Client cli(host_, 80);
+#endif
         httplib::Headers headers;
         headers.emplace("User-Agent", "MNN-CLI/1.0");
         headers.emplace("Accept", "application/json");

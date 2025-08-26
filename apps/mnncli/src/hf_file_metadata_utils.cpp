@@ -13,75 +13,129 @@
 namespace mnncli {
 
 HfFileMetadata HfFileMetadataUtils::getFileMetadata(const std::string& url, std::string& error_info) {
-    // Create a default HTTP client for metadata requests
-    auto client = std::make_shared<httplib::SSLClient>("huggingface.co");
-    return getFileMetadata(url, client, error_info);
+    // Create a default client if none provided
+    std::shared_ptr<
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+        httplib::SSLClient
+#else
+        httplib::Client
+#endif
+    > default_client;
+    
+    if (!default_client) {
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+        default_client = std::make_shared<httplib::SSLClient>("huggingface.co");
+#else
+        default_client = std::make_shared<httplib::Client>("huggingface.co");
+#endif
+    }
+    return getFileMetadata(url, default_client, error_info);
 }
 
 HfFileMetadata HfFileMetadataUtils::getFileMetadata(const std::string& url, 
-                                                   std::shared_ptr<httplib::SSLClient> client,
+                                                   std::shared_ptr<
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+                                                   httplib::SSLClient
+#else
+                                                   httplib::Client
+#endif
+                                                   > client,
                                                    std::string& error_info) {
-    HfFileMetadata metadata;
-    metadata.location = url;
-    
     try {
-        // Parse URL to get host and path
-        auto [host, path] = HfApiClient::ParseUrl(url);
-        if (host.empty() || path.empty()) {
-            error_info = "Invalid URL format: " + url;
-            return metadata;
+        // Parse the URL to extract host and path
+        std::string host, path;
+        if (!parseUrl(url, host, path)) {
+            error_info = "Invalid URL format";
+            return {};
         }
         
-        // Create HTTP client if not provided
-        std::unique_ptr<httplib::SSLClient> local_client;
+        // Create a local client if none provided
+        std::unique_ptr<
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+            httplib::SSLClient
+#else
+            httplib::Client
+#endif
+        > local_client;
+        
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
         httplib::SSLClient* client_ptr = client.get();
+#else
+        httplib::Client* client_ptr = client.get();
+#endif
         
         if (!client_ptr) {
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
             local_client = std::make_unique<httplib::SSLClient>(host, 443);
+#else
+            local_client = std::make_unique<httplib::Client>(host, 80);
+#endif
             client_ptr = local_client.get();
         }
         
-        // Set up headers for HEAD request
+        // Set headers for the request
         httplib::Headers headers;
-        headers.emplace(HEADER_ACCEPT_ENCODING, "identity");
+        headers.emplace("User-Agent", "MNN-CLI/1.0");
+        headers.emplace("Accept", "*/*");
         
-        // Make HEAD request to get metadata
-        auto response = client_ptr->Head(path, headers);
-        
-        if (!response) {
-            error_info = "No response received from server";
-            return metadata;
+        // Make the HEAD request to get metadata
+        auto res = client_ptr->Head(path, headers);
+        if (!res) {
+            error_info = "Failed to connect to server";
+            return {};
         }
         
-        // Check for success or redirect status codes (301, 302, 303, 307, 308)
-        bool is_redirect = (response->status >= 301 && response->status <= 308);
-        
-        if (response->status < 200 || response->status >= 300 && !is_redirect) {
-            error_info = "Failed to fetch metadata status " + std::to_string(response->status);
-            return metadata;
+        if (res->status != 200) {
+            error_info = "HTTP error: " + std::to_string(res->status);
+            return {};
         }
         
-        // Handle redirects
-        if (is_redirect) {
-            std::string location = response->get_header_value(HEADER_LOCATION);
-            if (!location.empty()) {
-                metadata.location = handleRedirects(url, location);
+        // Extract metadata from response headers
+        HfFileMetadata metadata;
+        metadata.location = url;
+        
+        // Get file size
+        auto content_length = res->get_header_value("Content-Length");
+        if (!content_length.empty()) {
+            try {
+                metadata.size = std::stoull(content_length);
+            } catch (const std::exception& e) {
+                // Ignore parsing errors for size
             }
         }
         
-        // Parse HuggingFace specific headers
-        parseHuggingFaceHeaders(response->headers, metadata);
-        
-        // Validate metadata
-        if (!metadata.isValid()) {
-            error_info = "Invalid metadata received - missing required fields";
+        // Get ETag for hash verification
+        auto etag = res->get_header_value("ETag");
+        if (!etag.empty()) {
+            metadata.etag = etag;
         }
         
+        return metadata;
+        
     } catch (const std::exception& e) {
-        error_info = "Exception during metadata fetch: " + std::string(e.what());
+        error_info = "Exception: " + std::string(e.what());
+        return {};
+    }
+}
+
+bool HfFileMetadataUtils::parseUrl(const std::string& url, std::string& host, std::string& path) {
+    // Simple URL parsing for https://host/path format
+    if (url.substr(0, 8) != "https://") {
+        return false;
     }
     
-    return metadata;
+    size_t host_start = 8;
+    size_t path_start = url.find('/', host_start);
+    
+    if (path_start == std::string::npos) {
+        host = url.substr(host_start);
+        path = "/";
+    } else {
+        host = url.substr(host_start, path_start - host_start);
+        path = url.substr(path_start);
+    }
+    
+    return !host.empty();
 }
 
 int64_t HfFileMetadataUtils::parseContentLength(const std::string& content_length) {

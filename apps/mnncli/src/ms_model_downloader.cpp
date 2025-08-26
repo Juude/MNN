@@ -269,7 +269,11 @@ bool MsModelDownloader::DownloadFile(const std::string& url, const std::filesyst
     std::string final_path = path;
     
     // Create HTTP client for redirect check
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
     httplib::SSLClient redirect_client(host, 443);
+#else
+    httplib::Client redirect_client(host, 80);
+#endif
     httplib::Headers redirect_headers;
     redirect_headers.emplace("User-Agent", "MNN-CLI/1.0");
     redirect_headers.emplace("Accept", "*/*");
@@ -326,7 +330,11 @@ bool MsModelDownloader::DownloadFile(const std::string& url, const std::filesyst
     }
     
     // Create HTTP client for actual download
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
     httplib::SSLClient client(final_host, 443);
+#else
+    httplib::Client client(final_host, 80);
+#endif
     httplib::Headers headers;
     headers.emplace("User-Agent", "MNN-CLI/1.0");
     headers.emplace("Accept", "*/*");

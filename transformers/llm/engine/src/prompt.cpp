@@ -205,5 +205,57 @@ std::string Prompt::applyTemplate(const std::vector<ChatMessage>& inputs, bool a
     return prompt_str;
 }
 
+// 多轮会话接口实现
+void Prompt::addUserMessage(const std::string& content, const std::vector<std::string>& image_placeholders) {
+    ConversationMessage msg;
+    msg.role = "user";
+    msg.content = content;
+    msg.image_placeholders = image_placeholders;
+    msg.message_id = mConversationState.history.size();
+    
+    mConversationState.history.push_back(msg);
+    
+    if (!image_placeholders.empty()) {
+        mConversationState.has_cached_images = true;
+        for (const auto& placeholder : image_placeholders) {
+            mConversationState.image_cache_refs[placeholder] = msg.message_id;
+        }
+    }
+}
+
+void Prompt::addAssistantMessage(const std::string& content) {
+    ConversationMessage msg;
+    msg.role = "assistant";
+    msg.content = content;
+    msg.message_id = mConversationState.history.size();
+    
+    mConversationState.history.push_back(msg);
+}
+
+void Prompt::addSystemMessage(const std::string& content) {
+    ConversationMessage msg;
+    msg.role = "system";
+    msg.content = content;
+    msg.message_id = mConversationState.history.size();
+    
+    mConversationState.history.push_back(msg);
+}
+
+std::string Prompt::applyConversationTemplate(bool add_generation_prompt) {
+    std::vector<ChatMessage> chat_messages;
+    
+    // 转换会话历史为ChatMessage格式
+    for (const auto& msg : mConversationState.history) {
+        chat_messages.push_back(std::make_pair(msg.role, msg.content));
+    }
+    
+    // 使用现有的模板应用逻辑
+    return applyTemplate(chat_messages, add_generation_prompt);
+}
+
+void Prompt::clearConversation() {
+    mConversationState.clear();
+}
+
 }
 }

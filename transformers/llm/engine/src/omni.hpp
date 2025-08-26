@@ -9,10 +9,69 @@
 #define OMNI_hpp
 
 #include "llm/llm.hpp"
+#include <chrono>
+#include <functional>
+#include <unordered_map>
 
 namespace MNN {
 using namespace Express;
 namespace Transformer {
+
+// 图像缓存条目
+struct VisionCacheEntry {
+    std::string image_hash;  // 图像内容的hash
+    VARP vision_embedding;   // 缓存的视觉特征
+    std::vector<int> token_ids;  // 对应的token IDs
+    int64_t last_used_time;  // 最后使用时间（用于LRU淘汰）
+    int reference_count = 0;  // 引用计数
+    
+    VisionCacheEntry(const std::string& hash, VARP embedding, const std::vector<int>& tokens)
+        : image_hash(hash), vision_embedding(embedding), token_ids(tokens), 
+          last_used_time(std::chrono::duration_cast<std::chrono::milliseconds>(
+              std::chrono::system_clock::now().time_since_epoch()).count()) {}
+};
+
+// 视觉缓存管理器
+class VisionCache {
+private:
+    std::unordered_map<std::string, std::unique_ptr<VisionCacheEntry>> mCache;
+    size_t mMaxCacheSize = 100;  // 最大缓存条目数
+    std::function<std::string(Express::VARP)> mImageHasher;  // 图像hash函数
+    
+public:
+    VisionCache(size_t max_size = 100) : mMaxCacheSize(max_size) {
+        // 默认图像hash函数：基于图像数据内容
+        mImageHasher = [](Express::VARP image) -> std::string {
+            if (image.get() == nullptr) return "";
+            auto data = image->readMap<float>();
+            auto size = image->getInfo()->size;
+            std::hash<std::string> hasher;
+            std::string data_str(reinterpret_cast<const char*>(data), size * sizeof(float));
+            return std::to_string(hasher(data_str));
+        };
+    }
+    
+    // 获取缓存的视觉特征
+    VisionCacheEntry* get(const std::string& image_hash);
+    
+    // 添加到缓存
+    void put(const std::string& image_hash, VARP embedding, const std::vector<int>& token_ids);
+    
+    // 检查是否存在
+    bool contains(const std::string& image_hash) const;
+    
+    // 生成图像hash
+    std::string generateImageHash(Express::VARP image) { return mImageHasher(image); }
+    
+    // 清理缓存（LRU策略）
+    void cleanup();
+    
+    // 清空所有缓存
+    void clear() { mCache.clear(); }
+    
+    // 获取缓存统计信息
+    size_t size() const { return mCache.size(); }
+};
 
 class MropeInfo {
 public:
@@ -114,6 +173,14 @@ public:
     virtual void response(const std::vector<int>& input_ids, std::ostream* os = &std::cout, const char* end_with = nullptr, int max_new_tokens = -1) override;
     virtual void setWavformCallback(std::function<bool(const float*, size_t, bool)> callback) override;
     virtual void generateWavform() override;
+    
+    // 多轮会话接口
+    void startConversation();
+    void addConversationImage(VARP image, const std::string& placeholder = "");
+    void addConversationMessage(const std::string& role, const std::string& content);
+    void responseConversation(const std::string& user_input, std::ostream* os = &std::cout, 
+                             const char* end_with = nullptr, int max_new_tokens = -1);
+    void clearConversation();
     // some models preprocess function
     std::vector<int> visionProcess(VARP image);
     std::vector<int> defaultVisionProcess(VARP image);
@@ -138,9 +205,18 @@ private:
     std::shared_ptr<Module> mVisionModule, mAudioModule;
     std::vector<VARP> mVisionEmbeddings, mAudioEmbeddings;
     std::shared_ptr<Talker> mTalker;
+    
+    // 视觉特征缓存
+    std::unique_ptr<VisionCache> mVisionCache;
+    bool mEnableVisionCache = true;  // 是否启用视觉缓存
+    
     // m_rope position ids
     void addPositionIds(int t, int h = -1, int w = -1);
     MropeInfo mPositionIds;
+    
+    // 新增缓存相关方法
+    std::vector<int> visionProcessWithCache(VARP image);
+    std::string computeImageHash(VARP image);
 };
 
 }

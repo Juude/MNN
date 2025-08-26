@@ -66,13 +66,20 @@ std::vector<RepoItem> HfApiClient::SearchRepos(const std::string& keyword) {
 }
 
 std::vector<RepoItem> HfApiClient::SearchReposInner(const std::string& keyword, std::string& error_info) {
+    // Create HTTP client
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
     httplib::SSLClient cli(GetHost(), 443);
+#else
+    httplib::Client cli(GetHost(), 80);
+#endif
     
     // Configure SSL client with proper timeouts and settings
     cli.set_connection_timeout(30, 0);
     cli.set_read_timeout(30, 0);
     cli.set_write_timeout(30, 0);
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
     cli.enable_server_certificate_verification(false);
+#endif
     cli.set_keep_alive(true);
     
     httplib::Headers headers;
@@ -172,7 +179,12 @@ mnncli::RepoInfo HfApiClient::GetRepoInfo(
     auto request_func = [&]() -> bool {
         // Parse host and path from the URL
         // Make the HTTPS request
+        // Create HTTP client
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
         httplib::SSLClient cli(GetHost(), 443);
+#else
+        httplib::Client cli(GetHost(), 80);
+#endif
         
         // Configure SSL client with proper timeouts and settings
         cli.set_connection_timeout(30, 0);  // 30 seconds connection timeout
@@ -180,7 +192,9 @@ mnncli::RepoInfo HfApiClient::GetRepoInfo(
         cli.set_write_timeout(30, 0);       // 30 seconds write timeout
         
         // Enable server certificate verification (but allow self-signed for testing)
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
         cli.enable_server_certificate_verification(false);
+#endif
         
         // Set SSL context options
         cli.set_keep_alive(true);
@@ -228,11 +242,15 @@ mnncli::RepoInfo HfApiClient::GetRepoInfo(
                 error_msg += " - No response received";
                 std::cout << "❌ " << error_msg << std::endl;
                 
-                // Get detailed error information from the SSL client
+                // Check for SSL errors
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
                 auto ssl_error = cli.get_openssl_verify_result();
                 if (ssl_error != 0) {
-                    std::cout << "   SSL verification error code: " << ssl_error << std::endl;
+                    std::cerr << "SSL verification failed: " << ssl_error << std::endl;
+                    error_info = "SSL verification failed";
+                    return {};
                 }
+#endif
                 
                 // Check if it's a connection timeout or other network issue
                 std::cout << "   Possible causes:" << std::endl;
@@ -244,9 +262,16 @@ mnncli::RepoInfo HfApiClient::GetRepoInfo(
                 
                 // Try a simple connection test
                 std::cout << "   Testing basic connectivity..." << std::endl;
+                // Create HTTP client
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
                 httplib::SSLClient test_cli(GetHost(), 443);
+#else
+                httplib::Client test_cli(GetHost(), 80);
+#endif
                 test_cli.set_connection_timeout(10, 0);
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
                 test_cli.enable_server_certificate_verification(false);
+#endif
                 auto test_res = test_cli.Get("/");
                 if (test_res) {
                     std::cout << "   Basic connectivity: OK (got response)" << std::endl;

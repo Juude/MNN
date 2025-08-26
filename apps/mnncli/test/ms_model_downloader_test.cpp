@@ -18,8 +18,12 @@ int main() {
     
     std::cout << "Making request to: https://" << host << path << std::endl;
     
-    // Make the HTTPS request to ModelScope
+    // Create HTTP client
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
     httplib::SSLClient cli(host, 443);
+#else
+    httplib::Client cli(host, 80);
+#endif
     httplib::Headers headers;
     headers.emplace("User-Agent", "MNN-CLI-Test/1.0");
     headers.emplace("Accept", "application/json");

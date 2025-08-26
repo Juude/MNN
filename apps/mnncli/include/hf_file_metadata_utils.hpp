@@ -21,10 +21,19 @@ public:
     
     // Get file metadata using custom HTTP client
     static HfFileMetadata getFileMetadata(const std::string& url, 
-                                         std::shared_ptr<httplib::SSLClient> client,
+                                         std::shared_ptr<
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+                                         httplib::SSLClient
+#else
+                                         httplib::Client
+#endif
+                                         > client,
                                          std::string& error_info);
-
+    
 private:
+    // Parse URL to extract host and path
+    static bool parseUrl(const std::string& url, std::string& host, std::string& path);
+    
     // Parse content length from header
     static int64_t parseContentLength(const std::string& content_length);
     

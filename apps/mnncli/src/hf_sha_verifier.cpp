@@ -12,6 +12,7 @@
 namespace mnncli {
 
 bool HfShaVerifier::verify(const std::string& etag, const fs::path& file) {
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
     if (!fs::exists(file)) {
         std::cerr << "HfShaVerifier: File " << file.string() << " does not exist" << std::endl;
         return false;
@@ -38,9 +39,15 @@ bool HfShaVerifier::verify(const std::string& etag, const fs::path& file) {
     
     std::cout << "HfShaVerifier: Verifying " << file.string() << ": expected=" << expected << " actual=" << actual << std::endl;
     return expected == actual;
+#else
+    // SHA verification not available without OpenSSL
+    std::cerr << "HfShaVerifier: SHA verification not available without OpenSSL support" << std::endl;
+    return false;
+#endif
 }
 
 std::string HfShaVerifier::gitSha1Hex(const fs::path& file) {
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
     try {
         // Get file size
         auto file_size = fs::file_size(file);
@@ -102,13 +109,25 @@ std::string HfShaVerifier::gitSha1Hex(const fs::path& file) {
         std::cerr << "HfShaVerifier: Error calculating Git SHA1: " << e.what() << std::endl;
         return "";
     }
+#else
+    // SHA calculation not available without OpenSSL
+    std::cerr << "HfShaVerifier: SHA calculation not available without OpenSSL support" << std::endl;
+    return "";
+#endif
 }
 
 std::string HfShaVerifier::sha256Hex(const fs::path& file) {
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
     return digestHex(file, "SHA-256");
+#else
+    // SHA calculation not available without OpenSSL
+    std::cerr << "HfShaVerifier: SHA calculation not available without OpenSSL support" << std::endl;
+    return "";
+#endif
 }
 
 std::string HfShaVerifier::digestHex(const fs::path& file, const std::string& algo) {
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
     try {
         // Create EVP context
         EVP_MD_CTX* ctx = EVP_MD_CTX_new();
@@ -166,6 +185,11 @@ std::string HfShaVerifier::digestHex(const fs::path& file, const std::string& al
         std::cerr << "HfShaVerifier: Error calculating " << algo << ": " << e.what() << std::endl;
         return "";
     }
+#else
+    // SHA calculation not available without OpenSSL
+    std::cerr << "HfShaVerifier: SHA calculation not available without OpenSSL support" << std::endl;
+    return "";
+#endif
 }
 
 std::string HfShaVerifier::bytesToHex(const unsigned char* data, size_t length) {

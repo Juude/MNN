@@ -235,14 +235,18 @@ namespace mnncli
         auto [host, path] = HfApiClient::ParseUrl(url);
         printf("downloadChunk: URL='%s', host='%s', path='%s'\n", url.c_str(), host.c_str(), path.c_str());
         
-        // Create a new HTTP client for this specific download with the correct host
+        // Create HTTP client for download
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
         httplib::SSLClient download_client(host, 443);
-        
-        // Configure SSL client with proper timeouts and settings (copying from Android)
+#else
+        httplib::Client download_client(host, 80);
+#endif
         download_client.set_connection_timeout(CONNECT_TIMEOUT_SECONDS, 0);
         download_client.set_read_timeout(CONNECT_TIMEOUT_SECONDS, 0);
         download_client.set_write_timeout(CONNECT_TIMEOUT_SECONDS, 0);
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
         download_client.enable_server_certificate_verification(false);
+#endif
         download_client.set_keep_alive(true);
         
         if (verbose_) {

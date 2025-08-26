@@ -77,7 +77,12 @@ private:
 
 private:
     std::shared_ptr<HfApiClient> hf_api_client_;
+    // HTTP client for metadata requests
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
     std::shared_ptr<httplib::SSLClient> metadata_client_;
+#else
+    std::shared_ptr<httplib::Client> metadata_client_;
+#endif
     
     // Constants
     static constexpr const char* HOST_DEFAULT = "huggingface.co";

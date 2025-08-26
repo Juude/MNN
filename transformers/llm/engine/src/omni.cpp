@@ -10,6 +10,12 @@
 #endif
 #include <regex>
 #include <algorithm>
+#include <cmath>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 #include <MNN/AutoTime.hpp>
 #include <MNN/expr/ExecutorScope.hpp>
 #include "omni.hpp"
@@ -66,6 +72,10 @@ Omni::Omni(std::shared_ptr<LlmConfig> config) : Llm(config) {
         mVisionSizeUnit = config->config_.value("image_size_unit", mVisionSizeUnit);
         mVisionMaxSize = config->config_.value("image_max_size", mVisionMaxSize);
         mVisionGlobal = config->config_.value("global_image", mVisionGlobal);
+        
+        // 初始化视觉缓存
+        mVisionCache.reset(new VisionCache(config->config_.value("vision_cache_size", 100)));
+        mEnableVisionCache = config->config_.value("enable_vision_cache", true);
     }
     if (config->is_audio()) {}
 }
@@ -916,8 +926,13 @@ VARP Omni::embedding(const std::vector<int>& input_ids) {
 #endif
     }
 
-    mVisionEmbeddings.clear();
-    mAudioEmbeddings.clear();
+    // 注意：不再自动清空vision/audio embeddings，由调用者管理
+    // 这样可以支持多轮会话中的缓存复用
+    if (!mEnableVisionCache) {
+        mVisionEmbeddings.clear();
+        mAudioEmbeddings.clear();
+    }
+    
     if (!cur_txt_ids.empty()) {
         auto txt_embedding = Llm::embedding(cur_txt_ids);
         embeddings.push_back(txt_embedding);
@@ -1146,8 +1161,8 @@ VARP Talker::ditForward(const int codec_size, const int* codec_tokens, const flo
     }
     MNN::Timer _t;
     for (int i = 0; i < steps - 1; i++) {
-        float t0 = 1 - std::cos(M_PI / 2 * i * step_ratio);
-        float t1 = 1 - std::cos(M_PI / 2 * (i + 1) * step_ratio);
+        float t0 = 1 - cosf(M_PI / 2 * i * step_ratio);
+        float t1 = 1 - cosf(M_PI / 2 * (i + 1) * step_ratio);
         float dt = t1 - t0;
         auto k1 = mDit->onForward({y0, code_embeds, rope, mask, _Const(t0, {1}, NCHW)})[0];
         if (solver == 1) {
@@ -1274,6 +1289,150 @@ void Talker::setPostionIds(const MropeInfo& positionIds) {
 void Talker::addTalkerEmbeds(VARP talker_embeds) {
     if (!doGenerate()) { return; }
     mTalkerEmbeds.push_back(_Clone(talker_embeds, true));
+}
+
+// VisionCache 实现
+VisionCacheEntry* VisionCache::get(const std::string& image_hash) {
+    auto it = mCache.find(image_hash);
+    if (it != mCache.end()) {
+        // 更新最后使用时间
+        it->second->last_used_time = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        it->second->reference_count++;
+        return it->second.get();
+    }
+    return nullptr;
+}
+
+void VisionCache::put(const std::string& image_hash, VARP embedding, const std::vector<int>& token_ids) {
+    if (mCache.size() >= mMaxCacheSize) {
+        cleanup();
+    }
+    
+    auto entry = std::make_unique<VisionCacheEntry>(image_hash, embedding, token_ids);
+    mCache[image_hash] = std::move(entry);
+}
+
+bool VisionCache::contains(const std::string& image_hash) const {
+    return mCache.find(image_hash) != mCache.end();
+}
+
+void VisionCache::cleanup() {
+    if (mCache.empty()) return;
+    
+    // LRU淘汰策略：移除最老的条目
+    auto oldest_it = mCache.begin();
+    for (auto it = mCache.begin(); it != mCache.end(); ++it) {
+        if (it->second->last_used_time < oldest_it->second->last_used_time) {
+            oldest_it = it;
+        }
+    }
+    mCache.erase(oldest_it);
+}
+
+// Omni多轮会话接口实现
+void Omni::startConversation() {
+    if (mPrompt) {
+        mPrompt->clearConversation();
+    }
+    // 保留vision cache但清空当前embeddings
+    mVisionEmbeddings.clear();
+    mAudioEmbeddings.clear();
+}
+
+void Omni::addConversationImage(VARP image, const std::string& placeholder) {
+    if (image.get() == nullptr || !mEnableVisionCache) return;
+    
+    std::string image_hash = mVisionCache->generateImageHash(image);
+    if (!mVisionCache->contains(image_hash)) {
+        // 图片不在缓存中，需要处理
+        auto token_ids = visionProcess(image);
+        // 缓存处理结果（注意：此时mVisionEmbeddings已经有了新的embedding）
+        if (!mVisionEmbeddings.empty()) {
+            mVisionCache->put(image_hash, mVisionEmbeddings.back(), token_ids);
+        }
+    }
+}
+
+void Omni::addConversationMessage(const std::string& role, const std::string& content) {
+    if (!mPrompt) return;
+    
+    if (role == "user") {
+        mPrompt->addUserMessage(content);
+    } else if (role == "assistant") {
+        mPrompt->addAssistantMessage(content);
+    } else if (role == "system") {
+        mPrompt->addSystemMessage(content);
+    }
+}
+
+void Omni::responseConversation(const std::string& user_input, std::ostream* os, 
+                               const char* end_with, int max_new_tokens) {
+    if (!mPrompt) {
+        MNN_PRINT("Error: Prompt not initialized for conversation\n");
+        return;
+    }
+    
+    // 添加用户消息
+    mPrompt->addUserMessage(user_input);
+    
+    // 应用对话模板
+    std::string formatted_prompt = mPrompt->applyConversationTemplate(true);
+    
+    // 使用缓存的vision embeddings进行推理
+    auto input_ids = tokenizer_encode(formatted_prompt);
+    
+    // 生成回复
+    response(input_ids, os, end_with, max_new_tokens);
+    
+    // 将生成的回复添加到会话历史中
+    // 注意：这里需要从输出中提取实际的回复文本
+    // 简化起见，暂时省略具体实现
+}
+
+void Omni::clearConversation() {
+    if (mPrompt) {
+        mPrompt->clearConversation();
+    }
+    mVisionEmbeddings.clear();
+    mAudioEmbeddings.clear();
+    if (mVisionCache) {
+        mVisionCache->clear();
+    }
+}
+
+std::vector<int> Omni::visionProcessWithCache(VARP image) {
+    if (!mEnableVisionCache || !mVisionCache) {
+        return visionProcess(image);
+    }
+    
+    std::string image_hash = mVisionCache->generateImageHash(image);
+    auto cached_entry = mVisionCache->get(image_hash);
+    
+    if (cached_entry) {
+        // 使用缓存的结果
+        MNN_PRINT("Using cached vision features for image hash: %s\n", image_hash.c_str());
+        mVisionEmbeddings.push_back(cached_entry->vision_embedding);
+        return cached_entry->token_ids;
+    } else {
+        // 图片不在缓存中，正常处理并缓存结果
+        MNN_PRINT("Processing new image and caching result: %s\n", image_hash.c_str());
+        auto token_ids = visionProcess(image);
+        
+        // 缓存结果
+        if (!mVisionEmbeddings.empty()) {
+            mVisionCache->put(image_hash, mVisionEmbeddings.back(), token_ids);
+        }
+        
+        return token_ids;
+    }
+}
+
+std::string Omni::computeImageHash(VARP image) {
+    if (mVisionCache) {
+        return mVisionCache->generateImageHash(image);
+    }
+    return "";
 }
 
 } // namespace Transformer

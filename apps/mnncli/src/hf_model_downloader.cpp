@@ -18,8 +18,12 @@ namespace mnncli {
 HfModelDownloader::HfModelDownloader(const std::string& cache_root_path)
     : ModelRepoDownloader(getCachePathRoot(cache_root_path)), hf_api_client_(nullptr) {
     
-    // Initialize metadata client with proper settings
+    // Create HTTP client for metadata requests
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
     metadata_client_ = std::make_shared<httplib::SSLClient>("huggingface.co");
+#else
+    metadata_client_ = std::make_shared<httplib::Client>("huggingface.co");
+#endif
     // Note: httplib doesn't have direct timeout settings like OkHttp, 
     // but we can handle this in the request logic
 }

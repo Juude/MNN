@@ -42,15 +42,23 @@ if (BUILD_MNNCLI)
     # Set OpenSSL_FOUND based on the presence of include directory and libraries
     set(OPENSSL_USE_STATIC_LIBS TRUE)
     message(STATUS "OPENSSL_INCLUDE_DIR: ${OPENSSL_INCLUDE_DIR} OPENSSL_LIBRARIES:${OPENSSL_LIBRARIES}")
-    if(OPENSSL_LIBRARIES AND OPENSSL_INCLUDE_DIR)
-        set(OpenSSL_FOUND TRUE)
-    else()
+
+    # Check if we're building for Android
+    if(CMAKE_SYSTEM_NAME STREQUAL "Android")
+        message(STATUS "Android build detected - skipping OpenSSL")
         set(OpenSSL_FOUND FALSE)
-    endif()
-    
-    # Check if OPENSSL_LIBRARIES is not set to find OpenSSL
-    if(NOT OpenSSL_FOUND)
-        find_package(OpenSSL REQUIRED)
+        set(ANDROID_BUILD TRUE)
+    else()
+        # For non-Android platforms, check if OPENSSL_LIBRARIES is not set to find OpenSSL
+        if(OPENSSL_LIBRARIES AND OPENSSL_INCLUDE_DIR)
+            set(OpenSSL_FOUND TRUE)
+        else()
+            set(OpenSSL_FOUND FALSE)
+        endif()
+        
+        if(NOT OpenSSL_FOUND)
+            find_package(OpenSSL REQUIRED)
+        endif()
     endif()
 
     # Check if OpenSSL is found
@@ -79,7 +87,11 @@ if (BUILD_MNNCLI)
             endif()
         endif()
     else()
-        message(FATAL_ERROR "OpenSSL not found. Please install OpenSSL and set paths.")
+        if(ANDROID_BUILD)
+            message(STATUS "OpenSSL not found - this is expected for Android builds")
+        else()
+            message(FATAL_ERROR "OpenSSL not found. Please install OpenSSL and set paths.")
+        endif()
     endif()
 
     # Use MNN project's standard include directories and dependencies
@@ -102,8 +114,17 @@ if (BUILD_MNNCLI)
     target_compile_options(mnncli PRIVATE -frtti)
     
     # Link to MNN libraries - these will be built as part of the same project
-    target_link_libraries(mnncli PRIVATE ${MNN_DEPS} MNN llm)
-    target_compile_definitions(mnncli PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT)
+    target_link_libraries(mnncli PRIVATE ${MNN_DEPS} MNN)
+    
+    # Only link to LLM library if it's being built
+    if(MNN_BUILD_LLM)
+        target_link_libraries(mnncli PRIVATE llm)
+    endif()
+    
+    # Only add OpenSSL support compile definition when OpenSSL is available
+    if(OpenSSL_FOUND)
+        target_compile_definitions(mnncli PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT)
+    endif()
     
     # Add test directory
     add_subdirectory(test)

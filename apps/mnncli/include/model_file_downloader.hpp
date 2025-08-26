@@ -87,8 +87,12 @@ private:
     void logVerbose(const std::string& message) const;
 
 private:
-    // HTTP client configuration matching Android OkHttpClient settings
+    // HTTP client for downloads
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
     httplib::SSLClient client_;
+#else
+    httplib::Client client_;
+#endif
     static constexpr int CONNECT_TIMEOUT_SECONDS = 30;
     static constexpr int MAX_RETRY = 10;
     static constexpr int BUFFER_SIZE = 8192;
