@@ -83,7 +83,7 @@ android {
 }
 
 ext {
-    okdownload_version = '1.0.8-SNAPSHOT'
+    okdownload_version = '1.0.7'
 }
 
 dependencies {

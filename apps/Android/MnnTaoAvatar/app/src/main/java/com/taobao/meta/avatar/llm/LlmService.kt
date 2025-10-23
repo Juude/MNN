@@ -13,12 +13,12 @@ import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-class LlmService {
+class LlmService : ILlmService {
 
     private var chatSession: ChatSession? = null
     private var stopRequested = false
 
-    suspend fun init(modelDir: String?): Boolean = withContext(Dispatchers.IO) {
+    override suspend fun init(modelDir: String?): Boolean = withContext(Dispatchers.IO) {
         Log.d(TAG, "createSession begin")
         chatSession = ChatService.provide().createSession(
             "test_modelId_sessionId",
@@ -31,12 +31,12 @@ class LlmService {
         true
     }
 
-    fun startNewSession() {
+    override fun startNewSession() {
         chatSession?.reset()
         chatSession?.updatePrompt(MainSettings.getLlmPrompt(ApplicationProvider.get()))
     }
 
-    fun generate(text: String): Flow<Pair<String?, String>> = channelFlow {
+    override fun generate(text: String): Flow<Pair<String?, String>> = channelFlow {
         stopRequested = false
         val result = StringBuilder()
         withContext(Dispatchers.Default) {
@@ -54,11 +54,11 @@ class LlmService {
         }
     }.cancellable()
 
-    fun requestStop() {
+    override fun requestStop() {
         stopRequested = true
     }
 
-    fun unload() {
+    override fun unload() {
         chatSession?.release()
     }
 

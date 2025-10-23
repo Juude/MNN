@@ -12,7 +12,7 @@ import com.k2fsa.sherpa.mnn.OfflineTtsModelConfig
 import com.taobao.meta.avatar.MHConfig
 import com.taobao.meta.avatar.MainActivity
 import com.taobao.meta.avatar.R
-import com.taobao.meta.avatar.a2bs.A2BSService
+import com.taobao.meta.avatar.a2bs.IA2BSService
 import com.taobao.meta.avatar.a2bs.AudioBlendShapePlayer
 import com.taobao.meta.avatar.audio.AudioChunksPlayer
 import com.taobao.meta.avatar.tts.TtsService
@@ -31,12 +31,14 @@ class DebugModule {
         const val DEBUG_USE_PRIVATE = false
         const val DEBUG_TTS_ENGLISH = true
         const val TTS_USE_SHERPA = false
+        const val DEBUG_FORCE_MOCK_LLM = false  // 强制使用 Mock LLM 服务
+        const val DEBUG_FORCE_MOCK_A2BS = false  // 强制使用 Mock A2BS 服务
     }
 
     private lateinit var ttsButton: View
     private lateinit var a2bsButton: View
     private lateinit var llmButton: View
-    private lateinit var a2BSService: A2BSService
+    private lateinit var a2BSService: IA2BSService
     private lateinit var ttsService: TtsService
     private lateinit var activity: MainActivity
     fun setupDebug(activity: MainActivity) {
@@ -75,7 +77,8 @@ class DebugModule {
     }
 
     private fun testLlm() {
-//        mLLMService!!.process("hello", mLLMTextViewHandler!!, mLLMResponseHandler!!)
+        Log.d(TAG, "Testing LLM service...")
+        activity.testLlmService()
     }
 
     private suspend fun testA2bs() {

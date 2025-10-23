@@ -8,7 +8,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
-class A2BSService {
+class A2BSService : IA2BSService {
 
     private var a2bsServiceNative: Long = 0
 
@@ -23,7 +23,7 @@ class A2BSService {
         isLoaded = false
     }
 
-    suspend fun waitForInitComplete(): Boolean {
+    override suspend fun waitForInitComplete(): Boolean {
         if (isLoaded) return true
         initDeferred?.let {
             return it.await()
@@ -39,7 +39,7 @@ class A2BSService {
         return result
     }
 
-    suspend fun init(modelDir: String?, context: Context): Boolean = mutex.withLock {
+    override suspend fun init(modelDir: String?, context: Context): Boolean = mutex.withLock {
         if (isLoaded) return true
         val result = withContext(Dispatchers.IO) {
             val tempDir = context.cacheDir.absolutePath + "/a2bs_tmp"
@@ -54,7 +54,7 @@ class A2BSService {
         return result
     }
 
-    fun process(index:Int, audioData: ShortArray, sampleRate: Int): AudioToBlendShapeData {
+    override fun process(index:Int, audioData: ShortArray, sampleRate: Int): AudioToBlendShapeData {
         return nativeProcessBuffer(a2bsServiceNative, index, audioData, sampleRate)
     }
 

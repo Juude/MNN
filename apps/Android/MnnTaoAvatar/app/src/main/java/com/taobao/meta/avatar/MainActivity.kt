@@ -15,14 +15,16 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.lifecycleScope
 import com.alibaba.mls.api.ApplicationProvider
 import com.taobao.meta.avatar.MHConfig.A2BS_MODEL_DIR
-import com.taobao.meta.avatar.a2bs.A2BSService
+import com.taobao.meta.avatar.a2bs.IA2BSService
+import com.taobao.meta.avatar.a2bs.A2BSServiceFactory
 import com.taobao.meta.avatar.a2bs.AudioBlendShapePlayer
 import com.taobao.meta.avatar.asr.RecognizeService
 import com.taobao.meta.avatar.debug.DebugModule
 import com.taobao.meta.avatar.download.DownloadCallback
 import com.taobao.meta.avatar.download.DownloadModule
 import com.taobao.meta.avatar.llm.LlmPresenter
-import com.taobao.meta.avatar.llm.LlmService
+import com.taobao.meta.avatar.llm.ILlmService
+import com.taobao.meta.avatar.llm.LlmServiceFactory
 import com.taobao.meta.avatar.nnr.AvatarTextureView
 import com.taobao.meta.avatar.nnr.NnrAvatarRender
 import com.taobao.meta.avatar.record.RecordPermission
@@ -50,8 +52,8 @@ class MainActivity : AppCompatActivity(),
     MainView.MainViewCallback, DownloadCallback {
 
     private lateinit var avatarTextureView: AvatarTextureView
-    private var a2bsService: A2BSService? = null
-    private lateinit var llmService: LlmService
+    private var a2bsService: IA2BSService? = null
+    private lateinit var llmService: ILlmService
     private lateinit var llmPresenter: LlmPresenter
     private var ttsService: TtsService? = null
     private var memoryMonitor: MemoryMonitor? = null
@@ -80,10 +82,11 @@ class MainActivity : AppCompatActivity(),
         memoryMonitor!!.startMonitoring()
         avatarTextureView = findViewById(R.id.surface_view)
         avatarTextureView.setPlaceHolderView(findViewById(R.id.img_place_holder))
-        a2bsService = A2BSService()
+        a2bsService = createA2BSService()
         ttsService = TtsService()
         llmPresenter = LlmPresenter(mainView.textResponse)
-        llmService = LlmService()
+        // 创建 LLM 服务 - 支持 mock 模式
+        llmService = createLlmService()
         nnrAvatarRender = NnrAvatarRender(avatarTextureView, MHConfig.NNR_MODEL_DIR)
         val debugModule = DebugModule()
         debugModule.setupDebug(this)
@@ -300,7 +303,7 @@ class MainActivity : AppCompatActivity(),
         recognizeService.initRecognizer()
     }
 
-    fun getA2bsService(): A2BSService {
+    fun getA2bsService(): IA2BSService {
         return a2bsService!!
     }
 
@@ -406,6 +409,183 @@ class MainActivity : AppCompatActivity(),
     override fun onDownloadError(error: Exception?) {
         Log.e(TAG, "Download error", error)
         mainView.onDownloadError(error)
+    }
+    
+    /**
+     * 创建 A2BS 服务实例
+     * 支持 mock 模式和真实模式
+     */
+    private fun createA2BSService(): IA2BSService {
+        // 检查是否强制使用 mock 服务
+        val forceMock = shouldUseMockA2BSService()
+        
+        val service = A2BSServiceFactory.createA2BSService(this, forceMock)
+        
+        val serviceType = if (forceMock) "Mock" else "Real"
+        Log.i(TAG, "Created $serviceType A2BS Service: ${service::class.simpleName}")
+        
+        // 在调试模式下显示服务类型
+        if (MHConfig.DEBUG_MODE) {
+            Toast.makeText(this, "A2BS Service: $serviceType", Toast.LENGTH_SHORT).show()
+        }
+        
+        return service
+    }
+    
+    /**
+     * 判断是否应该使用 mock A2BS 服务
+     */
+    @SuppressLint("SimpleDateFormat")
+    private fun shouldUseMockA2BSService(): Boolean {
+        if(true) {
+            return true
+        }
+        // 1. 检查调试模式设置
+        if (MHConfig.DEBUG_MODE && DebugModule.DEBUG_FORCE_MOCK_A2BS) {
+            Log.d(TAG, "Using mock A2BS service due to debug setting")
+            return true
+        }
+        
+        // 2. 检查用户设置
+        val userPrefersMock = A2BSServiceFactory.isUsingMockService(this)
+        if (userPrefersMock) {
+            Log.d(TAG, "Using mock A2BS service due to user preference")
+            return true
+        }
+        
+        // 3. 检查模型文件是否存在
+        val modelDir = A2BS_MODEL_DIR
+        val configFile = File(modelDir, "config.json")
+        if (!configFile.exists()) {
+            Log.w(TAG, "A2BS model config not found at $configFile, using mock service")
+            return true
+        }
+        
+        Log.d(TAG, "Using real A2BS service")
+        return false
+    }
+    
+    /**
+     * 创建 LLM 服务实例
+     * 支持 mock 模式和真实模式
+     */
+    private fun createLlmService(): ILlmService {
+        // 检查是否强制使用 mock 服务
+        val forceMock = shouldUseMockService()
+        
+        val service = LlmServiceFactory.createLlmService(this, forceMock)
+        
+        val serviceType = if (forceMock) "Mock" else "Real"
+        Log.i(TAG, "Created $serviceType LLM Service: ${service::class.simpleName}")
+        
+        // 在调试模式下显示服务类型
+        if (MHConfig.DEBUG_MODE) {
+            Toast.makeText(this, "LLM Service: $serviceType", Toast.LENGTH_SHORT).show()
+        }
+        
+        return service
+    }
+    
+    /**
+     * 判断是否应该使用 mock 服务
+     */
+    @SuppressLint("SimpleDateFormat")
+    private fun shouldUseMockService(): Boolean {
+        if(true) {
+            return true
+        }
+        // 1. 检查调试模式设置
+        if (MHConfig.DEBUG_MODE && DebugModule.DEBUG_FORCE_MOCK_LLM) {
+            Log.d(TAG, "Using mock service due to debug setting")
+            return true
+        }
+        
+        // 2. 检查用户设置
+        val userPrefersMock = LlmServiceFactory.isUsingMockService(this)
+        if (userPrefersMock) {
+            Log.d(TAG, "Using mock service due to user preference")
+            return true
+        }
+        
+        // 3. 检查模型文件是否存在
+        val modelDir = MHConfig.LLM_MODEL_DIR
+        val configFile = File(modelDir, "config.json")
+        if (!configFile.exists()) {
+            Log.w(TAG, "LLM model config not found at $configFile, using mock service")
+            return true
+        }
+        
+        Log.d(TAG, "Using real LLM service")
+        return false
+    }
+    
+    /**
+     * 切换 LLM 服务类型
+     * 用于调试和测试
+     */
+    fun switchLlmServiceType(useMock: Boolean) {
+        Log.i(TAG, "Switching LLM service to ${if (useMock) "Mock" else "Real"}")
+        
+        // 停止当前服务
+        llmService.unload()
+        
+        // 设置新的服务类型
+        LlmServiceFactory.setUseMockService(this, useMock)
+        
+        // 创建新的服务实例
+        llmService = LlmServiceFactory.createLlmService(this, useMock)
+        
+        // 如果服务已初始化，重新初始化
+        if (initComplete.isCompleted) {
+            lifecycleScope.launch {
+                try {
+                    val success = llmService.init(MHConfig.LLM_MODEL_DIR)
+                    if (success) {
+                        llmService.startNewSession()
+                        Log.i(TAG, "LLM service switched and reinitialized successfully")
+                    } else {
+                        Log.e(TAG, "Failed to reinitialize LLM service after switch")
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error reinitializing LLM service after switch", e)
+                }
+            }
+        }
+    }
+    
+    /**
+     * 获取当前 LLM 服务类型
+     */
+    fun getCurrentLlmServiceType(): String {
+        return when (llmService) {
+            is com.taobao.meta.avatar.llm.MockLlmService -> "Mock"
+            is com.taobao.meta.avatar.llm.LlmService -> "Real"
+            else -> "Unknown"
+        }
+    }
+    
+    /**
+     * 测试 LLM 服务
+     * 用于验证服务是否正常工作
+     */
+    fun testLlmService() {
+        lifecycleScope.launch {
+            try {
+                Log.d(TAG, "Testing LLM service...")
+                val testText = "Hello, this is a test message."
+                
+                llmService.generate(testText).collect { pair ->
+                    Log.d(TAG, "LLM test response: ${pair.second}")
+                    if (pair.first == null) {
+                        // 生成完成
+                        Log.i(TAG, "LLM service test completed successfully")
+                        return@collect
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "LLM service test failed", e)
+            }
+        }
     }
     
     companion object {

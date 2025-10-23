@@ -47,7 +47,7 @@ class AudioBlendShapePlayer(nnrAvatarRender: NnrAvatarRender, activity: MainActi
     private var sessionJob:Job? = null
     private var sessionScope: CoroutineScope? = null
     private val ttsService:TtsService = activity.getTtsService()
-    private val a2bsService: A2BSService = activity.getA2bsService()
+    private val a2bsService: IA2BSService = activity.getA2bsService()
     //key: segementId, value: start audio size of the segment
     private val audioMarkerMap = Collections.synchronizedMap(mutableMapOf(0 to 0))
     private val audioMarkerMapReverse = Collections.synchronizedMap(mutableMapOf(0 to 0))
