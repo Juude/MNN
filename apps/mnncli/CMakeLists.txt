@@ -5,7 +5,20 @@ project(mnncli VERSION 1.0.0 LANGUAGES CXX C ASM)
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING "Minimum macOS version" FORCE)
+
+# Platform-specific settings
+if(APPLE)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING "Minimum macOS version" FORCE)
+elseif(WIN32)
+    # Windows-specific settings
+    set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
+    if(MSVC)
+        # Use static runtime for better portability
+        set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+        # Disable some MSVC warnings
+        add_compile_options(/W3 /wd4996 /wd4244 /wd4267)
+    endif()
+endif()
 
 option(BUILD_MNNCLI_TEST "Build MNNCLI test programs." OFF)
 
@@ -22,6 +35,35 @@ if(APPLE)
     message(STATUS "  Include: ${OPENSSL_INCLUDE_DIR}")
     message(STATUS "  SSL: ${OPENSSL_SSL_LIBRARY}")
     message(STATUS "  Crypto: ${OPENSSL_CRYPTO_LIBRARY}")
+elseif(WIN32)
+    # Windows OpenSSL configuration
+    set(OPENSSL_USE_STATIC_LIBS TRUE)
+    # Try to find OpenSSL in common locations
+    find_path(OPENSSL_ROOT_DIR
+        NAMES include/openssl/ssl.h
+        PATHS
+            "C:/OpenSSL-Win64"
+            "C:/OpenSSL-Win32"
+            "C:/Program Files/OpenSSL-Win64"
+            "C:/Program Files/OpenSSL-Win32"
+            "C:/Program Files (x86)/OpenSSL-Win64"
+            "C:/Program Files (x86)/OpenSSL-Win32"
+        NO_DEFAULT_PATH
+    )
+    
+    if(OPENSSL_ROOT_DIR)
+        set(OPENSSL_INCLUDE_DIR "${OPENSSL_ROOT_DIR}/include")
+        set(OPENSSL_SSL_LIBRARY "${OPENSSL_ROOT_DIR}/lib/libssl.lib")
+        set(OPENSSL_CRYPTO_LIBRARY "${OPENSSL_ROOT_DIR}/lib/libcrypto.lib")
+        set(OPENSSL_LIBRARIES "${OPENSSL_SSL_LIBRARY};${OPENSSL_CRYPTO_LIBRARY}")
+        set(OpenSSL_FOUND TRUE)
+        message(STATUS "Found OpenSSL at: ${OPENSSL_ROOT_DIR}")
+        message(STATUS "  Include: ${OPENSSL_INCLUDE_DIR}")
+        message(STATUS "  SSL: ${OPENSSL_SSL_LIBRARY}")
+        message(STATUS "  Crypto: ${OPENSSL_CRYPTO_LIBRARY}")
+    else()
+        message(WARNING "OpenSSL not found in common locations. Will try to find it via find_package.")
+    endif()
 endif()
 
 # Use httplib from MNN transformers directory instead of fetching it
@@ -264,11 +306,33 @@ target_include_directories(mnncli PRIVATE
 set_property(TARGET mnncli PROPERTY CXX_STANDARD 17)
 set_property(TARGET mnncli PROPERTY CXX_STANDARD_REQUIRED ON)
 
-# Enable exceptions for mnncli (override global -fno-exceptions)
-target_compile_options(mnncli PRIVATE -fexceptions)
-
-# Enable RTTI for OpenCV compatibility
-target_compile_options(mnncli PRIVATE -frtti)
+# Platform-specific compile options
+if(UNIX)
+    # Enable exceptions for mnncli (override global -fno-exceptions)
+    target_compile_options(mnncli PRIVATE -fexceptions)
+    
+    # Enable RTTI for OpenCV compatibility
+    target_compile_options(mnncli PRIVATE -frtti)
+elseif(WIN32)
+    # Windows-specific compile options
+    if(MSVC)
+        # Enable exceptions for mnncli
+        target_compile_options(mnncli PRIVATE /EHsc)
+        
+        # Enable RTTI for OpenCV compatibility
+        target_compile_options(mnncli PRIVATE /GR)
+        
+        # Additional MSVC options
+        target_compile_options(mnncli PRIVATE 
+            /bigobj           # Support large object files
+            /MP               # Multi-processor compilation
+            /utf-8            # Source and execution character sets are UTF-8
+        )
+    else()
+        # MinGW/GCC on Windows
+        target_compile_options(mnncli PRIVATE -fexceptions -frtti)
+    endif()
+endif()
 
 # Suppress macOS version mismatch warnings for better compatibility
 if(APPLE)
@@ -290,9 +354,24 @@ if(APPLE)
     target_link_libraries(mnncli PRIVATE ${FOUNDATION} ${METAL} ${GRAPHIC})
 endif()
 
-# Link pthread and dl on Linux/macOS
+# Link system libraries
 if(UNIX)
+    # Link pthread and dl on Linux/macOS
     target_link_libraries(mnncli PRIVATE pthread dl)
+elseif(WIN32)
+    # Link Windows system libraries
+    target_link_libraries(mnncli PRIVATE 
+        ws2_32      # Windows Sockets
+        winmm       # Windows Multimedia
+        crypt32     # Windows Cryptography
+        advapi32    # Advanced Windows API
+        user32      # User Interface
+        kernel32    # Windows Kernel
+        ole32       # OLE
+        oleaut32    # OLE Automation
+        shell32     # Windows Shell
+        version     # Version Information
+    )
 endif()
 
 # Link OpenSSL static libraries
