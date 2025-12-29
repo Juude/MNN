@@ -1,0 +1,24 @@
+{
+  "name": "mnn-node",
+  "version": "1.0.0",
+  "description": "Node.js bindings for MNN",
+  "main": "index.js",
+  "scripts": {
+    "test": "node test/test.js",
+    "install": "cmake-js compile"
+  },
+  "keywords": [
+    "MNN",
+    "Node.js",
+    "Deep Learning"
+  ],
+  "author": "",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "bindings": "^1.5.0",
+    "node-addon-api": "^7.0.0"
+  },
+  "devDependencies": {
+    "cmake-js": "^7.0.0"
+  }
+}
