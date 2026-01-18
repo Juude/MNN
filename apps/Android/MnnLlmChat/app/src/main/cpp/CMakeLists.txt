@@ -31,30 +31,14 @@ add_library(${CMAKE_PROJECT_NAME} SHARED
 target_link_options(${CMAKE_PROJECT_NAME} PRIVATE "-Wl,-z,max-page-size=16384")
 
 #mnn
-set (MNN_SOURCE_ROOT "${CMAKE_SOURCE_DIR}/../../../../../../../")
-#set (MNN_SOURCE_ROOT "/Users/songjinde/git/DAI/AliNNPrivate")
-set (MNN_INSTALL_ROOT "${MNN_SOURCE_ROOT}/project/android/build_64")
-# set (MNN_INSTALL_ROOT "/Users/songjinde/MNN/project/android/build_64")
+set (MNN_DIR "${CMAKE_SOURCE_DIR}/../jniLibs/mnn")
+message(INFO "MNN_DIR: ${MNN_DIR}")
 
-#set (MNN_ROOT "${CMAKE_SOURCE_DIR}/../../../../../../../")
-message(INFO "MNN_SOURCE_ROOT: ${MNN_SOURCE_ROOT}")
-message(INFO "MNN_INSTALL_ROOT: ${MNN_INSTALL_ROOT}")
+include_directories("${MNN_DIR}/include")
+include_directories("${CMAKE_SOURCE_DIR}/include")
 
-include_directories("${MNN_SOURCE_ROOT}/include/")
-
-#diffusion
-include_directories("${MNN_SOURCE_ROOT}/transformers/diffusion/engine/include/")
-
-#llm
-include_directories("${MNN_SOURCE_ROOT}/transformers/llm/engine/include")
-#include_directories("${CMAKE_SOURCE_DIR}/include")
-
-#audio
-include_directories("${MNN_SOURCE_ROOT}/tools/audio/include")
-include_directories("${MNN_SOURCE_ROOT}/3rd_party/")
-include_directories("${CMAKE_SOURCE_DIR}/third_party")
 # Add library paths
-set(LIB_PATH "${MNN_INSTALL_ROOT}/lib")
+set(LIB_PATH "${MNN_DIR}/lib")
 
 # Link the shared library
 
