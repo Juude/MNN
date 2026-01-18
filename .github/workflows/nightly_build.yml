@@ -1,0 +1,119 @@
+name: Nightly Build
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+jobs:
+  android_build:
+    name: Android Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          submodules: true
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v3
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: gradle
+
+      - name: Setup Android NDK
+        run: echo "ANDROID_NDK=$ANDROID_NDK_HOME" >> $GITHUB_ENV
+
+      - name: Build MnnLlmChat
+        run: |
+          chmod +x apps/Android/MnnLlmChat/build.sh
+          chmod +x project/android/build_64.sh
+          ./apps/Android/MnnLlmChat/build.sh
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: MnnLlmChat-APK
+          path: apps/Android/MnnLlmChat/app/build/outputs/apk/standard/debug/app-standard-debug.apk
+
+  pymnn_build:
+    name: PyMNN Wheels ${{ matrix.arch }} ${{ matrix.build }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,    arch: x86_64,     build: 'cp*-manylinux*' }
+          - { os: ubuntu-24.04-arm, arch: aarch64,    build: 'cp*-manylinux*' }
+          - { os: windows-latest,   arch: AMD64,      build: 'cp*'          }
+          - { os: macos-13,         arch: x86_64,     build: 'cp*'          }
+          - { os: macos-14,         arch: arm64,      build: 'cp*'          }
+
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          submodules: true
+
+      - name: using msvc
+        if: matrix.os == 'windows-latest'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: install pipx
+        if: matrix.os == 'macos-14'
+        run: python -m pip install pipx
+
+      - name: Build wheels
+        uses: pypa/cibuildwheel@v2.16.5
+        env:
+          CIBW_ARCHS_MACOS: ${{ matrix.arch }}
+          CIBW_ARCHS_LINUX: ${{ matrix.arch }}
+          CIBW_ARCHS_WINDOWS: ${{ matrix.arch }}
+          CIBW_BUILD: ${{ matrix.build }}
+          CIBW_BUILD_VERBOSITY: 1
+          CIBW_ENVIRONMENT: CMAKE_BUILD_PARALLEL_LEVEL=2
+        with:
+          package-dir: pymnn/pip_package
+          output-dir: wheelhouse
+          config-file: "{package}/pyproject.toml"
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: pymnn-wheels-${{ matrix.os }}-${{ matrix.arch }}
+          path: wheelhouse/*.whl
+
+  nightly_release:
+    name: Nightly Release
+    needs: [android_build, pymnn_build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Display structure of downloaded files
+        run: ls -R artifacts
+
+      - name: Prepare assets
+        run: |
+            mkdir assets
+            find artifacts -name "*.apk" -exec cp {} assets/ \;
+            find artifacts -name "*.whl" -exec cp {} assets/ \;
+            ls -R assets
+
+      - name: Update Nightly Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: nightly
+          name: Nightly Build
+          prerelease: true
+          files: assets/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
