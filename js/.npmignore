@@ -1,0 +1,22 @@
+# Ignore test assets to reduce package size
+test_assets/
+examples/
+models/
+
+# Ignore build artifacts
+build/
+CMakeCache.txt
+CMakeFiles/
+*.cmake
+*.tlog
+*.o
+*.obj
+*.so
+*.dylib
+*.a
+*.lib
+*.node
+
+# Ignore IDE files
+.vscode/
+.idea/
