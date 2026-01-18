@@ -17,14 +17,13 @@ endif()
 add_library(MNN
         SHARED
         IMPORTED)
-set(MNN_SOURCE_ROOT ${CMAKE_CURRENT_LIST_DIR}/../../../)
-set(MNN_INSTALL_ROOT "${MNN_SOURCE_ROOT}/project/android/build_64")
-set(LIB_PATH "${MNN_INSTALL_ROOT}/lib")
-message(STATUS "MNN_SOURCE_ROOT: ${MNN_SOURCE_ROOT}")
+set(MNN_DIR ${CMAKE_CURRENT_LIST_DIR}/../../Android/MnnLlmChat/app/src/main/jniLibs/mnn)
+set(LIB_PATH "${MNN_DIR}/lib")
+message(STATUS "MNN_DIR: ${MNN_DIR}")
 message(STATUS "LIB_PATH: ${LIB_PATH}")
 
 set_target_properties(MNN PROPERTIES INTERFACE_INCLUDE_DIRECTORIES
-        "${MNN_SOURCE_ROOT}/include;${MNN_SOURCE_ROOT}/tools/audio/include/;${MNN_SOURCE_ROOT}/transformers/llm/engine/include"
+        "${MNN_DIR}/include;${CMAKE_CURRENT_LIST_DIR}/../../Android/MnnLlmChat/app/src/main/cpp/include/audio;${CMAKE_CURRENT_LIST_DIR}/../../Android/MnnLlmChat/app/src/main/cpp/include/llm"
 )
 set_target_properties(MNN PROPERTIES IMPORTED_LOCATION "${LIB_PATH}/libMNN.so")
 

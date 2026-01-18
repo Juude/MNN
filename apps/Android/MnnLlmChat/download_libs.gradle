@@ -1,0 +1,57 @@
+// MNN native library download task
+task downloadAndUnzipMnnLibs {
+    group = 'Pre-build'
+    description = 'Downloads and unzips MNN native library from GitHub Releases.'
+    def mnnUrl = 'https://github.com/alibaba/MNN/releases/download/3.3.0/mnn_3.3.0_android_armv7_armv8_cpu_opencl_vulkan.zip'
+    def zipFileName = 'mnn_3.3.0_android.zip'
+    def outputDir = file('src/main/jniLibs/mnn')
+    def downloadedZip = new File(project.buildDir, zipFileName)
+    def checkFile = new File(outputDir, 'lib/libMNN.so') // Check for libMNN.so inside the extracted structure
+
+    inputs.property('url', mnnUrl)
+    outputs.file(checkFile)
+
+    doLast {
+        println "-> Executing downloadAndUnzipMnnLibs task..."
+        println "   Downloading from ${mnnUrl}"
+        println "   outputDir  ${outputDir}"
+        println "   downloadedZip  ${downloadedZip}"
+
+        // Create output directory if it doesn't exist
+        outputDir.mkdirs()
+
+        // Ensure build directory exists before downloading
+        downloadedZip.parentFile.mkdirs()
+
+        ant.get(src: mnnUrl, dest: downloadedZip)
+
+        if (!downloadedZip.exists()) {
+            throw new GradleException("Download failed: ${downloadedZip} not found.")
+        }
+        println "   Download complete."
+        println "   Unzipping ${downloadedZip.name} to ${outputDir}..."
+
+        copy {
+            from(zipTree(downloadedZip))
+            into(outputDir)
+        }
+        println "   Unzip complete."
+        downloadedZip.delete()
+
+        // Handle potential top-level directory in zip
+        def topLevelDir = outputDir.listFiles().find { it.isDirectory() && it.name != 'include' && it.name != 'lib' }
+        if (topLevelDir) {
+            println "   Found top-level directory ${topLevelDir.name}, moving contents up..."
+            copy {
+                from topLevelDir
+                into outputDir
+            }
+            delete topLevelDir
+        }
+    }
+
+    onlyIf {
+        println "-> Checking if MNN libs exist... [Exists: ${checkFile.exists()}]"
+        return !checkFile.exists()
+    }
+}
