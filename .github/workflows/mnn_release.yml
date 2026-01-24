@@ -204,7 +204,7 @@ jobs:
 
   upload-release:
     name: upload_to_release
-    needs: [linux-release, windows-release, macos-release, android-release, ios-release, js-release, rust-release]
+    needs: [setup, linux-release, windows-release, macos-release, android-release, ios-release, js-release, rust-release]
     runs-on: ubuntu-latest
     steps:
     - uses: actions/download-artifact@v4
@@ -214,12 +214,13 @@ jobs:
         merge-multiple: true
 
     - name: show file
-      run: ls assert
+      run: ls -R assert
 
-    - uses: xresloader/upload-to-github-release@v1
+    - uses: softprops/action-gh-release@v1
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        file: "assert/*.zip;assert/*.tgz"
-        tags: true
-        draft: true
+        tag_name: nightly-${{ needs.setup.outputs.VERSION }}
+        files: assert/*
+        prerelease: true
+        draft: false
