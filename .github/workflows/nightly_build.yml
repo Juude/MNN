@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - master
+      - 'nightly-build-workflow-*'
   workflow_dispatch:
 
 jobs:
