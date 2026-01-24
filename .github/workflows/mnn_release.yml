@@ -187,7 +187,7 @@ jobs:
     - name: build
       run: |
         cd rust
-        sed -i 's/^version = "0.1.0"/version = "0.1.0-nightly.'${{ needs.setup.outputs.VERSION }}"'"/' Cargo.toml
+        sed -i "s/^version = \"0.1.0\"/version = \"0.1.0-nightly.${{ needs.setup.outputs.VERSION }}\"/" Cargo.toml
         cargo build --release
     - name: package
       run: |
