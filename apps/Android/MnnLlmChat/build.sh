@@ -1,3 +1,5 @@
+#!/bin/bash
+cd $(dirname $0)
 cd ../../../project/android
 mkdir -p build_64
 cd build_64
