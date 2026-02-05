@@ -29,12 +29,17 @@ object ModelTypeUtils {
     }
 
     fun isDiffusionModel(modelName: String): Boolean {
-        return modelName.lowercase(Locale.getDefault()).contains("stable-diffusion")
+        val lower = modelName.lowercase(Locale.getDefault())
+        return lower.contains("stable-diffusion") || lower.contains("sana")
+    }
+
+    fun isSanaModel(modelName: String): Boolean {
+        return modelName.lowercase(Locale.getDefault()).contains("sana")
     }
 
     fun isVisualModel(modelId: String): Boolean {
         return modelId.lowercase(Locale.getDefault()).contains("vl") || isOmni(modelId) ||
-                ModelListManager.isVisualModel(modelId)
+                ModelListManager.isVisualModel(modelId) || isSanaModel(modelId)
     }
 
     fun isVideoModel(modelId: String): Boolean {

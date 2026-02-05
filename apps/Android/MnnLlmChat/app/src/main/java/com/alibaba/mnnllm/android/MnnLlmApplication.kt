@@ -7,6 +7,8 @@ import com.facebook.stetho.Stetho
 import com.facebook.stetho.dumpapp.DumperPlugin
 import com.alibaba.mnnllm.android.debug.ModelListDumperPlugin
 import com.alibaba.mnnllm.android.debug.LoggerDumperPlugin
+import com.alibaba.mnnllm.android.debug.SanaDumperPlugin
+import com.alibaba.mnnllm.api.openai.debug.OpenApiDumperPlugin
 import com.alibaba.mls.api.ApplicationProvider
 import com.alibaba.mnnllm.android.utils.CrashUtil
 import com.alibaba.mnnllm.android.utils.CurrentActivityTracker
@@ -40,6 +42,8 @@ class MnnLlmApplication : Application() {
                     Stetho.DefaultDumperPluginsBuilder(this)
                         .provide(ModelListDumperPlugin())
                         .provide(LoggerDumperPlugin())
+                        .provide(SanaDumperPlugin())
+                        .provide(OpenApiDumperPlugin())
                         .finish()
                 }
                 .enableWebKitInspector(Stetho.defaultInspectorModulesProvider(this))

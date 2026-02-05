@@ -608,4 +608,7 @@
     <string name="qnn_libs_download_failed">下载QNN库失败</string>
     <string name="qnn_libs_load_failed">加载QNN库失败</string>
     <string name="qnn_device_not_supported">检测到QNN模型但设备不支持QNN加速。请使用其他模型。</string>
+    <string name="save_image">保存图片</string>
+    <string name="image_saved_to_gallery">图片已保存到相册</string>
+    <string name="failed_to_save_image">保存图片失败</string>
 </resources>

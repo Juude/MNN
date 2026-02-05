@@ -2,100 +2,104 @@
 // Copyright (c) 2024 Alibaba Group Holding Limited All rights reserved.
 
 package com.alibaba.mnnllm.android.mainsettings
+
 import android.content.Intent
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.view.LayoutInflater
+import android.view.View
+import android.view.ViewGroup
 import android.widget.Toast
-import androidx.preference.ListPreference
-import androidx.preference.Preference
-import androidx.preference.PreferenceFragmentCompat
+import androidx.fragment.app.Fragment
+import androidx.preference.PreferenceManager
 import com.alibaba.mls.api.source.ModelSources
-import com.alibaba.mnnllm.android.R
 import com.alibaba.mnnllm.android.MNN
+import com.alibaba.mnnllm.android.R
+import com.alibaba.mnnllm.android.databinding.FragmentMainSettingsBinding
 import com.alibaba.mnnllm.android.debug.DebugActivity
 import com.alibaba.mnnllm.android.update.UpdateChecker
 import com.alibaba.mnnllm.android.utils.AppUtils
-import com.alibaba.mnnllm.android.utils.PreferenceUtils
-import com.alibaba.mnnllm.api.openai.service.ApiServerConfig
 import com.alibaba.mnnllm.api.openai.manager.ApiServiceManager
+import com.alibaba.mnnllm.api.openai.service.ApiServerConfig
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 
-class MainSettingsFragment : PreferenceFragmentCompat() {
+class MainSettingsFragment : Fragment() {
 
-    companion object {
-        const val TAG = "MainSettingsFragment"
-        private const val DEBUG_CLICK_COUNT = 5
-        private const val DEBUG_CLICK_TIMEOUT = 3000L // 3 seconds
-    }
+    private var _binding: FragmentMainSettingsBinding? = null
+    private val binding get() = _binding!!
 
     private var updateChecker: UpdateChecker? = null
     private var debugClickCount = 0
-    private var debugClickHandler = Handler(Looper.getMainLooper())
+    private val debugClickHandler = Handler(Looper.getMainLooper())
     private var debugClickRunnable: Runnable? = null
     private var updateCheckRunnable: Runnable? = null
-    private var debugModePref: Preference? = null
+
+    override fun onCreateView(
+        inflater: LayoutInflater,
+        container: ViewGroup?,
+        savedInstanceState: Bundle?
+    ): View {
+        _binding = FragmentMainSettingsBinding.inflate(inflater, container, false)
+        return binding.root
+    }
+
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+        setupSettings()
+    }
 
     override fun onResume() {
         super.onResume()
         updateChecker?.checkForUpdates(requireContext(), false)
     }
 
+    private fun setupSettings() {
+        val sharedPreferences = PreferenceManager.getDefaultSharedPreferences(requireContext())
 
-    override fun onStart() {
-        super.onStart()
-
-        // Setup debug mode preference
-        debugModePref = findPreference<Preference>("debug_mode")
-        debugModePref?.setOnPreferenceClickListener {
-            val intent = Intent(requireContext(), DebugActivity::class.java)
-            startActivity(intent)
-            true
+        // Stop Download on Chat
+        binding.itemStopDownload.isChecked = sharedPreferences.getBoolean("stop_download_on_chat", true)
+        binding.itemStopDownload.setOnCheckedChangeListener { isChecked ->
+            sharedPreferences.edit().putBoolean("stop_download_on_chat", isChecked).apply()
         }
 
-        // Ensure debug mode preference is hidden by default unless previously activated
-        val sharedPreferences = preferenceManager.sharedPreferences
-        val isDebugModeActivated = sharedPreferences?.getBoolean("debug_mode_activated", false) ?: false
-        debugModePref?.isVisible = isDebugModeActivated
-    }
-
-    override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
-        setPreferencesFromResource(R.xml.main_settings_prefs, rootKey)
-
-        val checkUpdatePref = findPreference<Preference>("check_update")
-        checkUpdatePref?.apply {
-            summary = getString(
-                R.string.current_version,
-                AppUtils.getAppVersionName(requireContext())
-            )
-            setOnPreferenceClickListener {
-                handleDebugClick()
-                updateCheckRunnable?.let { debugClickHandler.removeCallbacks(it) }
-                updateCheckRunnable = Runnable {
-                    updateChecker = UpdateChecker(requireContext())
-                    updateChecker?.checkForUpdates(requireContext(), true)
-                }
-                debugClickHandler.postDelayed(updateCheckRunnable!!, 1000L)
-                true
+        // Download Provider
+        val providerList = listOf(ModelSources.sourceHuffingFace, ModelSources.sourceModelScope, "modelers")
+        val currentProvider = MainSettings.getDownloadProviderString(requireContext())
+        
+        fun getProviderName(provider: String): String {
+            return when (provider) {
+                ModelSources.sourceHuffingFace -> provider
+                ModelSources.sourceModelScope -> getString(R.string.modelscope)
+                else -> getString(R.string.modelers)
             }
         }
 
-        // Setup MNN Version preference
-        val mnnVersionPref = findPreference<Preference>("mnn_version")
-        mnnVersionPref?.apply {
-            try {
-                val version = MNN.getVersion()
-                summary = getString(R.string.mnn_version_summary, version)
-            } catch (e: Exception) {
-                summary = "N/A"
+        binding.dropdownDownloadProvider.setCurrentItem(currentProvider)
+        binding.dropdownDownloadProvider.setDropDownItems(
+            providerList,
+            itemToString = { getProviderName(it as String) },
+            onDropdownItemSelected = { _, item ->
+                MainSettings.setDownloadProvider(requireContext(), item as String)
+                Toast.makeText(requireContext(), R.string.settings_complete, Toast.LENGTH_LONG).show()
             }
+        )
+
+        // Voice Model Management
+        binding.btnVoiceModelManagement.setOnClickListener {
+            val voiceModelMarketBottomSheet = com.alibaba.mnnllm.android.chat.voice.VoiceModelMarketBottomSheet.newInstance()
+            voiceModelMarketBottomSheet.show(childFragmentManager, "voice_model_market")
         }
 
+        // Enable API Service
+        binding.itemEnableApi.isChecked = MainSettings.isApiServiceEnabled(requireContext())
+        binding.itemEnableApi.setOnCheckedChangeListener { isChecked ->
+            sharedPreferences.edit().putBoolean("enable_api_service", isChecked).apply()
+        }
 
-        //Reset API configuration
-        val resetApiConfigPref = findPreference<Preference>("reset_api_config")
-        resetApiConfigPref?.setOnPreferenceClickListener {
+        // Reset API Config
+        binding.btnResetApi.setOnClickListener {
             MaterialAlertDialogBuilder(requireContext())
                 .setTitle(R.string.reset_api_config)
                 .setMessage(R.string.reset_api_config_confirm_message)
@@ -112,61 +116,38 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
                 }
                 .setNegativeButton(android.R.string.cancel, null)
                 .show()
-            true
         }
 
+        // Check Update
+        binding.btnCheckUpdate.apply {
+            val versionInfo = getString(R.string.check_for_update) + " (" + AppUtils.getAppVersionName(requireContext()) + ")"
+            text = versionInfo
+            setOnClickListener {
+                handleDebugClick()
+                updateCheckRunnable?.let { debugClickHandler.removeCallbacks(it) }
+                updateCheckRunnable = Runnable {
+                    updateChecker = UpdateChecker(requireContext())
+                    updateChecker?.checkForUpdates(requireContext(), true)
+                }
+                debugClickHandler.postDelayed(updateCheckRunnable!!, 1000L)
+            }
+        }
+
+        // MNN Version
+        try {
+            val version = MNN.getVersion()
+            binding.tvMnnVersion.text = getString(R.string.mnn_version_summary, version)
+        } catch (e: Exception) {
+            binding.tvMnnVersion.text = "N/A"
+        }
+
+        // Debug Mode
+        val isDebugModeActivated = sharedPreferences.getBoolean("debug_mode_activated", false)
+        updateDebugModeVisibility(isDebugModeActivated)
         
-        val voiceModelManagementPref = findPreference<Preference>("voice_model_management")
-        voiceModelManagementPref?.setOnPreferenceClickListener {
-            val voiceModelMarketBottomSheet = com.alibaba.mnnllm.android.chat.voice.VoiceModelMarketBottomSheet.newInstance()
-            voiceModelMarketBottomSheet.show(childFragmentManager, "voice_model_market")
-            true
-        }
-
-
-        val downloadProviderPref = findPreference<ListPreference>("download_provider")
-        downloadProviderPref?.apply {
-            fun updateSummary(vale:String) {
-                summary = when (vale) {
-                    ModelSources.sourceHuffingFace -> vale
-                    ModelSources.sourceModelScope -> getString(R.string.modelscope)
-                    else -> getString(R.string.modelers)
-                }
-            }
-            preferenceManager.sharedPreferences?.let { sharedPreferences ->
-                val defaultProvider = MainSettings.getDownloadProviderString(requireContext())
-                if (!sharedPreferences.contains("download_provider")) {
-                    sharedPreferences.edit().putString("download_provider", defaultProvider).apply()
-                    downloadProviderPref.value = defaultProvider
-                }
-                updateSummary(value?:defaultProvider)
-                onPreferenceChangeListener = Preference.OnPreferenceChangeListener { _, newValue ->
-                    updateSummary(newValue.toString())
-                    Toast.makeText(context, R.string.settings_complete, Toast.LENGTH_LONG).show()
-                    true
-                }
-            }
-        }
-
-        // Setup diffusion memory mode preference
-        val diffusionMemoryModePref = findPreference<ListPreference>("diffusion_memory_mode")
-        diffusionMemoryModePref?.apply {
-            fun updateMemorySummary(vale:String) {
-                Log.d(TAG, "diffusionMemoryModePref updateSummary vale: $vale")
-                diffusionMemoryModePref.summary = when (vale) {
-                    "0" -> getString(R.string.diffusion_mode_memory_saving)
-                    "1" -> getString(R.string.diffusion_mode_memory_enough)
-                    else -> getString(R.string.diffusion_mode_memory_balance)
-                }
-            }
-            val defaultMemoryMode = MainSettings.getDiffusionMemoryMode(requireContext())
-            updateMemorySummary(defaultMemoryMode)
-            onPreferenceChangeListener = Preference.OnPreferenceChangeListener { _, newValue ->
-                val memoryMode = (newValue as String)
-                updateMemorySummary(memoryMode)
-                MainSettings.setDiffusionMemoryMode(requireContext(), memoryMode)
-                true
-            }
+        binding.btnDebugMode.setOnClickListener {
+            val intent = Intent(requireContext(), DebugActivity::class.java)
+            startActivity(intent)
         }
     }
 
@@ -177,10 +158,9 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
         
         if (debugClickCount >= DEBUG_CLICK_COUNT) {
             updateCheckRunnable?.let { debugClickHandler.removeCallbacks(it) }
-            // Show debug mode preference instead of directly opening DebugActivity
-            debugModePref?.isVisible = true
-            // Save debug mode activation state to SharedPreferences
-            preferenceManager.sharedPreferences?.edit()?.putBoolean("debug_mode_activated", true)?.apply()
+            updateDebugModeVisibility(true)
+            PreferenceManager.getDefaultSharedPreferences(requireContext()).edit()
+                .putBoolean("debug_mode_activated", true).apply()
             debugClickCount = 0
             Log.d(TAG, "Debug mode preference activated")
         } else {
@@ -192,9 +172,21 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
         }
     }
 
-    override fun onDestroy() {
-        super.onDestroy()
+    private fun updateDebugModeVisibility(visible: Boolean) {
+        binding.dividerDebug.visibility = if (visible) View.VISIBLE else View.GONE
+        binding.btnDebugMode.visibility = if (visible) View.VISIBLE else View.GONE
+    }
+
+    override fun onDestroyView() {
+        super.onDestroyView()
+        _binding = null
         debugClickRunnable?.let { debugClickHandler.removeCallbacks(it) }
         updateCheckRunnable?.let { debugClickHandler.removeCallbacks(it) }
+    }
+
+    companion object {
+        const val TAG = "MainSettingsFragment"
+        private const val DEBUG_CLICK_COUNT = 5
+        private const val DEBUG_CLICK_TIMEOUT = 3000L // 3 seconds
     }
 }
