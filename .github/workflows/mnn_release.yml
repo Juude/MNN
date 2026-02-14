@@ -3,6 +3,10 @@ on:
   push:
     tags:
       - '*'
+    branches:
+      - '*'
+  schedule:
+    - cron: '0 0 * * *'
   workflow_dispatch:
 
 jobs:
@@ -20,8 +24,8 @@ jobs:
           # 提取标签版本号
           echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
         else
-          # 如果不是标签，则设置版本为 'dev'
-          echo "VERSION=dev" >> $GITHUB_OUTPUT
+          # 如果不是标签，则设置版本为日期
+          echo "VERSION=$(date +%Y%m%d)" >> $GITHUB_OUTPUT
         fi
 
   linux-release:
@@ -141,9 +145,66 @@ jobs:
         name: artifact-${{ env.PACKAGENAME }}
         path: ${{ env.PACKAGENAME }}.zip
 
+  js-release:
+    needs: [setup]
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        submodules: true
+    - name: pack
+      run: |
+        cd js
+        npm version "0.1.0-nightly.${{ needs.setup.outputs.VERSION }}" --no-git-tag-version
+        npm pack
+        mv *.tgz mnn_js_${{ needs.setup.outputs.VERSION }}.tgz
+    - name: upload-artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: artifact-mnn-js
+        path: js/mnn_js_${{ needs.setup.outputs.VERSION }}.tgz
+
+  rust-release:
+    needs: [setup, linux-release]
+    runs-on: ubuntu-latest
+    env:
+      LINUX_PACKAGENAME: mnn_${{ needs.setup.outputs.VERSION }}_linux_x64_cpu_opencl
+      PACKAGENAME: mnn_${{ needs.setup.outputs.VERSION }}_rust
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        submodules: true
+    - name: download-linux-lib
+      uses: actions/download-artifact@v4
+      with:
+        name: artifact-${{ env.LINUX_PACKAGENAME }}
+        path: linux_build
+    - name: prepare-build
+      run: |
+        unzip linux_build/${{ env.LINUX_PACKAGENAME }}.zip -d linux_extracted
+        mkdir -p build
+        find linux_extracted -name libMNN.so -exec cp {} build/ \;
+    - name: build
+      run: |
+        cd rust
+        sed -i "s/^version = \"0.1.0\"/version = \"0.1.0-nightly.${{ needs.setup.outputs.VERSION }}\"/" Cargo.toml
+        cargo build --release
+    - name: package
+      run: |
+        mkdir -p ${{ env.PACKAGENAME }}
+        cp rust/target/release/examples/* ${{ env.PACKAGENAME }}/ 2>/dev/null || true
+        cp build/libMNN.so ${{ env.PACKAGENAME }}/
+        find ${{ env.PACKAGENAME }} -type f -not -name "*.so" -exec chmod +x {} \;
+        zip -r ${{ env.PACKAGENAME }}.zip ${{ env.PACKAGENAME }}
+    - name: upload-zip
+      uses: actions/upload-artifact@v4
+      with:
+        name: artifact-${{ env.PACKAGENAME }}
+        path: ${{ env.PACKAGENAME }}.zip
+
   upload-release:
     name: upload_to_release
-    needs: [linux-release, windows-release, macos-release, android-release, ios-release]
+    needs: [setup, linux-release, windows-release, macos-release, android-release, ios-release, js-release, rust-release]
     runs-on: ubuntu-latest
     steps:
     - uses: actions/download-artifact@v4
@@ -153,12 +214,13 @@ jobs:
         merge-multiple: true
 
     - name: show file
-      run: ls assert
+      run: ls -R assert
 
-    - uses: xresloader/upload-to-github-release@v1
+    - uses: softprops/action-gh-release@v1
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        file: assert/*.zip
-        tags: true
-        draft: true
+        tag_name: nightly-${{ needs.setup.outputs.VERSION }}
+        files: assert/*
+        prerelease: true
+        draft: false
