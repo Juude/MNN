@@ -50,6 +50,8 @@ class DebugActivity : AppCompatActivity() {
 
     companion object {
         const val TAG = "DebugActivity"
+        private const val ACTION_LOCAL_MODEL_IMPORT_PROBE =
+            "com.alibaba.mnnllm.android.debug.ACTION_LOCAL_MODEL_IMPORT_PROBE"
         private const val REQUEST_RECORD_AUDIO_PERMISSION = 1001
         private const val KEY_SHOW_MODEL_INFO_ENABLED = "debug_show_model_info_enabled"
         private const val KEY_ALLOW_NETWORK_MARKET_DATA = "debug_allow_network_market_data"
@@ -108,6 +110,7 @@ class DebugActivity : AppCompatActivity() {
     )
 
     private var scanModelButton: Button? = null
+    private var localImportProbeButton: Button? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -184,8 +187,20 @@ class DebugActivity : AppCompatActivity() {
 
     private fun initScanViews(parentView: View) {
         scanModelButton = parentView.findViewById(R.id.scanModelButton)
+        localImportProbeButton = parentView.findViewById(R.id.localImportProbeButton)
         scanModelButton?.setOnClickListener {
             startModelScanTest()
+        }
+        val probeIntent = Intent(ACTION_LOCAL_MODEL_IMPORT_PROBE).setPackage(packageName)
+        val probeAvailable = probeIntent.resolveActivity(packageManager) != null
+        localImportProbeButton?.isEnabled = probeAvailable
+        localImportProbeButton?.alpha = if (probeAvailable) 1f else 0.5f
+        localImportProbeButton?.setOnClickListener {
+            if (!probeAvailable) {
+                log("Local model import probe activity is unavailable in this build")
+                return@setOnClickListener
+            }
+            startActivity(probeIntent)
         }
     }
 

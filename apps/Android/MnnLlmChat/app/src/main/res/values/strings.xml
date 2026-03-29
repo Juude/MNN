@@ -342,6 +342,19 @@
     <string name="add_local_models_title">Add Local Models</string>
     <string name="add_local_models_message">To add local models, first download them to your desktop, then run \'%1$s\'. After that, the models will appear in the model list.
 </string>
+    <string name="local_model_import_probe_title">Local Model Import Probe</string>
+    <string name="local_model_import_probe_description">Pick a folder from the system file manager, resolve its real path, and run the current local-model config precheck without copying files.</string>
+    <string name="local_model_import_probe_grant_manage_storage">Grant All Files Access</string>
+    <string name="local_model_import_probe_manage_storage_granted">All files access: granted</string>
+    <string name="local_model_import_probe_manage_storage_missing">All files access: missing</string>
+    <string name="local_model_import_probe_manage_storage_required">This probe needs All files access before testing direct path loading.</string>
+    <string name="local_model_import_probe_manage_storage_request_started">Opening All files access settings…</string>
+    <string name="local_model_import_probe_manage_storage_request_failed">Failed to open All files access settings</string>
+    <string name="local_model_import_probe_manage_storage_still_missing">All files access is still missing after returning from settings.</string>
+    <string name="local_model_import_probe_manage_storage_now_granted">All files access granted. You can retry the folder probe now.</string>
+    <string name="local_model_import_probe_pick_folder">Pick Model Folder</string>
+    <string name="local_model_import_probe_idle">Idle</string>
+    <string name="local_model_import_probe_open">Open Local Import Probe</string>
     <string name="copied_to_clipboard">Copied to clipboard</string>
     <string name="apk_download_started">Apk download started, view progress in the notification</string>
     <string name="api_config_reset_service_restarted">API configuration has been reset, service restarted</string>
@@ -420,6 +433,9 @@
     <string name="voice_chat_stop">Stop</string>
     <string name="voice_chat_stopping">Stopping...</string>
     <string name="voice_chat_ready_greeting">What can I help you with?</string>
+    <string name="echo_cancellation_mode">Echo Cancellation</string>
+    <string name="mic_mode_hardware">Hardware</string>
+    <string name="mic_mode_auto_mute">Auto Mute</string>
     <string name="voice_chat_usage_notice">To use voice chat, TTS and ASR models need to be downloaded. Please note multi-language support.</string>
     <string name="nav_name_chats">My Models</string>
     <string name="benchmark">Benchmark</string>
