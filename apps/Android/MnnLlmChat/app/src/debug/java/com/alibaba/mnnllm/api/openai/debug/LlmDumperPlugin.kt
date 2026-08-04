@@ -18,9 +18,61 @@ internal data class LlmRunResult(
     val stage: String = "unknown",
     val submitReturned: Boolean = false,
     val chunkCount: Int = 0,
+    val terminalCallbackCount: Int = 0,
+    val terminalSignal: String = "missing",
+    val nonTerminalChunkCount: Int = 0,
+    val emptyChunkCount: Int = 0,
     val completionReceived: Boolean = false,
     val elapsedMs: Long = 0L
 )
+
+internal fun completeRunResult(
+    modelId: String,
+    startedAt: Long,
+    response: String,
+    submitReturned: Boolean,
+    chunkCount: Int,
+    completionReceived: Boolean,
+    terminalCallbackCount: Int,
+    nonTerminalChunkCount: Int,
+    emptyChunkCount: Int
+): LlmRunResult {
+    val completedWithoutTerminalCallback = submitReturned && !completionReceived && (chunkCount > 0 || response.isNotEmpty())
+    val didComplete = completionReceived || completedWithoutTerminalCallback
+    val terminalSignal = if (terminalCallbackCount > 0) "callback_null" else "missing"
+    if (!didComplete) {
+        return LlmRunResult(
+            success = false,
+            modelId = modelId,
+            reason = "RUN_TIMEOUT",
+            response = response,
+            stage = "await_completion",
+            submitReturned = submitReturned,
+            chunkCount = chunkCount,
+            terminalCallbackCount = terminalCallbackCount,
+            terminalSignal = terminalSignal,
+            nonTerminalChunkCount = nonTerminalChunkCount,
+            emptyChunkCount = emptyChunkCount,
+            completionReceived = completionReceived,
+            elapsedMs = System.currentTimeMillis() - startedAt
+        )
+    }
+
+    return LlmRunResult(
+        success = true,
+        modelId = modelId,
+        response = response,
+        stage = if (completionReceived) "completed" else "completed_without_terminal_callback",
+        submitReturned = submitReturned,
+        chunkCount = chunkCount,
+        terminalCallbackCount = terminalCallbackCount,
+        terminalSignal = terminalSignal,
+        nonTerminalChunkCount = nonTerminalChunkCount,
+        emptyChunkCount = emptyChunkCount,
+        completionReceived = completionReceived || completedWithoutTerminalCallback,
+        elapsedMs = System.currentTimeMillis() - startedAt
+    )
+}
 
 internal interface LlmDebugController {
     fun ensureSession(modelId: String, forceReload: Boolean, useAppConfig: Boolean = false): EnsureSessionResult
@@ -54,12 +106,39 @@ internal object DefaultLlmDebugController : LlmDebugController {
     }
 
     override fun runPrompt(modelId: String, prompt: String, forceReload: Boolean, useAppConfig: Boolean): LlmRunResult {
-        val startedAt = System.currentTimeMillis()
-        val ensureResult = if (useAppConfig && !forceReload && runtime.getActiveSession() != null && runtime.getActiveModelId() == modelId) {
-            EnsureSessionResult(success = true, session = runtime.getActiveSession(), modelId = modelId)
+        return if (useAppConfig) {
+            runIsolatedAppConfigPrompt(modelId, prompt, forceReload)
         } else {
-            runtime.ensureSession(modelId, forceReload, useAppConfig)
+            runPromptWithRuntimeSession(modelId, prompt, forceReload, useAppConfig = false)
         }
+    }
+
+    private fun runIsolatedAppConfigPrompt(modelId: String, prompt: String, forceReload: Boolean): LlmRunResult {
+        val restoreModelId = runtime.getActiveModelId()
+        val shouldRestoreBaseSession = !restoreModelId.isNullOrBlank() && runtime.getActiveSession() != null
+
+        return try {
+            runPromptWithRuntimeSession(modelId, prompt, forceReload = true, useAppConfig = true)
+        } finally {
+            runtime.releaseSession()
+            if (shouldRestoreBaseSession) {
+                runtime.ensureSession(
+                    modelId = restoreModelId!!,
+                    forceReload = true,
+                    useAppConfig = false
+                )
+            }
+        }
+    }
+
+    private fun runPromptWithRuntimeSession(
+        modelId: String,
+        prompt: String,
+        forceReload: Boolean,
+        useAppConfig: Boolean
+    ): LlmRunResult {
+        val startedAt = System.currentTimeMillis()
+        val ensureResult = runtime.ensureSession(modelId, forceReload, useAppConfig)
         val session = ensureResult.session ?: runtime.getActiveSession()
         if (!ensureResult.success || session == null) {
             return LlmRunResult(
@@ -74,17 +153,27 @@ internal object DefaultLlmDebugController : LlmDebugController {
         val responseBuilder = StringBuilder()
         val latch = CountDownLatch(1)
         var chunkCount = 0
+        var terminalCallbackCount = 0
+        var nonTerminalChunkCount = 0
+        var emptyChunkCount = 0
         var completionReceived = false
         var submitReturned = false
 
         val listener = object : GenerateProgressListener {
             override fun onProgress(progress: String?): Boolean {
-                if (progress != null) {
+                if (progress == null) {
                     chunkCount += 1
-                    responseBuilder.append(progress)
-                } else {
+                    terminalCallbackCount += 1
                     completionReceived = true
                     latch.countDown()
+                } else {
+                    chunkCount += 1
+                    if (progress.isEmpty()) {
+                        emptyChunkCount += 1
+                    } else {
+                        nonTerminalChunkCount += 1
+                    }
+                    responseBuilder.append(progress)
                 }
                 return false
             }
@@ -97,30 +186,20 @@ internal object DefaultLlmDebugController : LlmDebugController {
             }
             submitReturned = true
 
-            val completed = latch.await(60, TimeUnit.SECONDS)
-            if (!completed) {
-                return LlmRunResult(
-                    success = false,
-                    modelId = ensureResult.modelId ?: modelId,
-                    reason = "RUN_TIMEOUT",
-                    response = responseBuilder.toString(),
-                    stage = "await_completion",
-                    submitReturned = submitReturned,
-                    chunkCount = chunkCount,
-                    completionReceived = completionReceived,
-                    elapsedMs = System.currentTimeMillis() - startedAt
-                )
+            if (!completionReceived) {
+                latch.await(250, TimeUnit.MILLISECONDS)
             }
 
-            LlmRunResult(
-                success = true,
+            completeRunResult(
                 modelId = ensureResult.modelId ?: modelId,
+                startedAt = startedAt,
                 response = responseBuilder.toString(),
-                stage = "completed",
                 submitReturned = submitReturned,
                 chunkCount = chunkCount,
                 completionReceived = completionReceived,
-                elapsedMs = System.currentTimeMillis() - startedAt
+                terminalCallbackCount = terminalCallbackCount,
+                nonTerminalChunkCount = nonTerminalChunkCount,
+                emptyChunkCount = emptyChunkCount
             )
         }.getOrElse {
             LlmRunResult(
@@ -131,6 +210,10 @@ internal object DefaultLlmDebugController : LlmDebugController {
                 stage = if (submitReturned) "after_submit_exception" else "submit",
                 submitReturned = submitReturned,
                 chunkCount = chunkCount,
+                terminalCallbackCount = terminalCallbackCount,
+                terminalSignal = if (terminalCallbackCount > 0) "callback_null" else "missing",
+                nonTerminalChunkCount = nonTerminalChunkCount,
+                emptyChunkCount = emptyChunkCount,
                 completionReceived = completionReceived,
                 elapsedMs = System.currentTimeMillis() - startedAt
             )
@@ -222,6 +305,10 @@ internal class LlmDumperPlugin(
             writer.println("STAGE=${result.stage}")
             writer.println("SUBMIT_RETURNED=${result.submitReturned}")
             writer.println("CHUNK_COUNT=${result.chunkCount}")
+            writer.println("TERMINAL_CALLBACK_COUNT=${result.terminalCallbackCount}")
+            writer.println("TERMINAL_SIGNAL=${result.terminalSignal}")
+            writer.println("NON_TERMINAL_CHUNK_COUNT=${result.nonTerminalChunkCount}")
+            writer.println("EMPTY_CHUNK_COUNT=${result.emptyChunkCount}")
             writer.println("COMPLETION_RECEIVED=${result.completionReceived}")
             writer.println("ELAPSED_MS=${result.elapsedMs}")
             writer.println("PARTIAL_RESPONSE_LEN=${result.response.length}")
@@ -235,6 +322,10 @@ internal class LlmDumperPlugin(
         writer.println("STAGE=${result.stage}")
         writer.println("SUBMIT_RETURNED=${result.submitReturned}")
         writer.println("CHUNK_COUNT=${result.chunkCount}")
+        writer.println("TERMINAL_CALLBACK_COUNT=${result.terminalCallbackCount}")
+        writer.println("TERMINAL_SIGNAL=${result.terminalSignal}")
+        writer.println("NON_TERMINAL_CHUNK_COUNT=${result.nonTerminalChunkCount}")
+        writer.println("EMPTY_CHUNK_COUNT=${result.emptyChunkCount}")
         writer.println("COMPLETION_RECEIVED=${result.completionReceived}")
         writer.println("ELAPSED_MS=${result.elapsedMs}")
         writer.println("RESPONSE_BEGIN")

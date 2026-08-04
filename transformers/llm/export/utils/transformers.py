@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from typing import Optional, Tuple
 
 from .model_mapper import ModelMapper
-from .custom_op import FusedAttention, MoE, FusedLinearAttention
+from .custom_op import FusedAttention, FusedRoPE, MoE, FusedLinearAttention
 
 class Embedding(torch.nn.Module):
     def __init__(self, embed, config):
@@ -12,10 +12,19 @@ class Embedding(torch.nn.Module):
         self.hidden_size = config.hidden_size
         self.embed = embed
         self.embed_scale = 1.0
-        if config.model_type == 'gemma' or config.model_type == 'gemma2':
+        config_embed_scale = getattr(config, 'scale_emb', None)
+        if config_embed_scale is not None:
+            self.embed_scale = config_embed_scale
+        elif config.model_type == 'gemma' or config.model_type == 'gemma2':
             self.embed_scale = self.hidden_size**0.5
         if hasattr(embed, 'embed_scale'):
             self.embed_scale = embed.embed_scale
+            # Replace ScaledWordEmbedding with plain Embedding to avoid double
+            # scaling (scale is applied separately via model.scale_emb)
+            if hasattr(embed, 'scalar_embed_scale'):
+                plain_embed = torch.nn.Embedding(embed.num_embeddings, embed.embedding_dim, embed.padding_idx)
+                plain_embed.weight = embed.weight
+                self.embed = plain_embed
 
     def forward(self, input_ids):
         inputs_embeds = self.embed(input_ids).view(-1, 1, self.hidden_size)
@@ -40,6 +49,18 @@ class RMSNorm(torch.nn.Module):
             hidden_states = hidden_states * F.silu(gate.to(torch.float32))
         return hidden_states.to(input_dtype)
 
+def canonical_rms_norm(norm, weight_offset=0.0):
+    """Convert model-specific RMSNorm weight semantics to an explicit gamma."""
+    if norm is None or not hasattr(norm, 'weight') or norm.weight is None:
+        return norm
+    eps = getattr(norm, 'variance_epsilon', getattr(norm, 'eps', 1e-6))
+    canonical = RMSNorm(norm.weight.numel(), eps=float(eps))
+    gamma = norm.weight.detach().float().clone()
+    if weight_offset != 0.0:
+        gamma = gamma + weight_offset
+    canonical.weight = torch.nn.Parameter(gamma, requires_grad=norm.weight.requires_grad)
+    return canonical
+
 def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     batch, num_key_value_heads, slen, head_dim = hidden_states.shape
     if n_rep == 1:
@@ -51,11 +72,14 @@ class Attention(torch.nn.Module):
     def __init__(self, attn, layer_id, config, rotary, mapper):
         super().__init__()
         self.export_fused_attn = False
+        self.export_fused_rope = False
         if config is None: return
         self.config = config
         self.kv_cache = True
         self.layer_id = layer_id
         self.rotary = rotary
+        export_args = getattr(config, 'export_args', None)
+        self.export_fused_rope = getattr(export_args, 'transformer_c4', True)
         self.hidden_size = config.hidden_size
         self.head_dim = config.head_dim
         if isinstance(config.num_attention_heads, list):
@@ -66,9 +90,64 @@ class Attention(torch.nn.Module):
             self.num_heads = config.num_attention_heads
             self.num_key_value_heads = config.num_key_value_heads
         self.num_key_value_groups = self.num_heads // self.num_key_value_heads
-        self.fused_attn = FusedAttention(self.num_heads * self.head_dim, self.kv_cache, f'/layers.{layer_id}/self_attn/FusedAttention')
-
         ModelMapper.do_map(self, attn, mapper['attention'])
+        if config.model_type in ['qwen3_5', 'qwen3_5_moe', 'qwen3_5_text']:
+            # Qwen3.5 attention norms use gamma=(1+weight). FusedRoPE stores
+            # norm.weight as gamma, so canonicalize the offset semantics first.
+            self.q_norm = canonical_rms_norm(getattr(self, 'q_norm', None), 1.0)
+            self.k_norm = canonical_rms_norm(getattr(self, 'k_norm', None), 1.0)
+        self.q_gate_proj = None
+        self.qk_norm_after_rope = getattr(config, 'qk_norm_after_rope', False)
+        if not self.qk_norm_after_rope:
+            self.qk_norm_after_rope = (
+                hasattr(attn, 'query_layernorm') and hasattr(attn, 'key_layernorm')
+            )
+
+        # Read attention scaling from the original HF attention module
+        if hasattr(attn, 'scaling'):
+            self.attn_scaling = attn.scaling
+
+        # k_eq_v / KV sharing detection (gemma4 and similar models)
+        # Mapper key 'k_eq_v' acts as sentinel: its presence means per-layer detection is needed.
+        # Detection is structural (works across HF versions):
+        #   - k_proj exists, v_proj missing → k_eq_v (K serves as both K and V)
+        #   - both missing + is_kv_shared_layer → pure KV sharing (no local K/V computation)
+        if getattr(self, 'k_eq_v', None) is not None:
+            has_k_proj = hasattr(self, 'k_proj') and self.k_proj is not None
+            has_v_proj = hasattr(self, 'v_proj') and self.v_proj is not None
+            self.k_eq_v = has_k_proj and not has_v_proj
+            # per-layer head_dim auto-detection (gemma4 has varying head_dim)
+            if hasattr(self, 'q_proj') and self.q_proj is not None:
+                actual_head_dim = self.q_proj.out_features // self.num_heads
+                if actual_head_dim != self.head_dim:
+                    self.head_dim = actual_head_dim
+            if has_k_proj:
+                actual_kv_heads = self.k_proj.out_features // self.head_dim
+                if actual_kv_heads != self.num_key_value_heads:
+                    self.num_key_value_heads = actual_kv_heads
+                    self.num_key_value_groups = self.num_heads // self.num_key_value_heads
+        else:
+            self.k_eq_v = False
+
+        # KV sharing (gemma4): track which layers share KV
+        self.is_kv_shared_layer = getattr(attn, 'is_kv_shared_layer', False)
+        self.kv_shared_layer_index = getattr(attn, 'kv_shared_layer_index', None)
+        self.store_full_length_kv = getattr(attn, 'store_full_length_kv', False)
+
+        # Create FusedAttention with KV sharing info
+        kv_shared_idx = self.kv_shared_layer_index if self.is_kv_shared_layer else -1
+        self.fused_attn = FusedAttention(
+            self.num_heads * self.head_dim, self.kv_cache,
+            f'/layers.{layer_id}/self_attn/FusedAttention', layer_id, kv_shared_idx,
+            self.head_dim)
+        self.rope_cut_head_dim = min(int(getattr(self.rotary, 'rotary_dim', self.head_dim)), self.head_dim)
+        self.fused_rope = FusedRoPE(
+            self.rope_cut_head_dim,
+            self.num_heads,
+            self.num_key_value_heads,
+            self.head_dim,
+            f'/layers.{layer_id}/self_attn/FusedRoPE',
+        )
 
         if hasattr(self, 'qkv_proj') and self.qkv_proj is not None:
             # split qkv linear to q, k, v
@@ -117,6 +196,30 @@ class Attention(torch.nn.Module):
             self.k_proj.bias.requires_grad = False
             self.v_proj.bias.requires_grad = False
 
+        # Some gated attention variants concatenate query and output-gate channels in q_proj.
+        # Split the projection while exporting C4 so query and gate can remain independent C4 tensors.
+        query_size = self.num_heads * self.head_dim
+        if (self.export_fused_rope
+                and not getattr(export_args, 'lora_split', False)
+                and isinstance(self.q_proj, torch.nn.Linear)
+                and self.q_proj.out_features == 2 * query_size):
+            combined_q_proj = self.q_proj
+            has_bias = combined_q_proj.bias is not None
+            self.q_proj = torch.nn.Linear(combined_q_proj.in_features, query_size, bias=has_bias)
+            self.q_gate_proj = torch.nn.Linear(combined_q_proj.in_features, query_size, bias=has_bias)
+            q_gate_weight = combined_q_proj.weight.data.view(
+                self.num_heads, 2, self.head_dim, combined_q_proj.in_features)
+            self.q_proj.weight.data = q_gate_weight[:, 0].reshape(query_size, combined_q_proj.in_features).clone()
+            self.q_gate_proj.weight.data = q_gate_weight[:, 1].reshape(query_size, combined_q_proj.in_features).clone()
+            if has_bias:
+                q_gate_bias = combined_q_proj.bias.data.view(self.num_heads, 2, self.head_dim)
+                self.q_proj.bias.data = q_gate_bias[:, 0].reshape(query_size).clone()
+                self.q_gate_proj.bias.data = q_gate_bias[:, 1].reshape(query_size).clone()
+            for projection in (self.q_proj, self.q_gate_proj):
+                projection.weight.requires_grad = False
+                if projection.bias is not None:
+                    projection.bias.requires_grad = False
+
         self.past_key_value = None
 
     def forward(
@@ -127,32 +230,108 @@ class Attention(torch.nn.Module):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         bsz, q_len, _ = hidden_states.size()
         query_states = self.q_proj(hidden_states)
-        if self.q_proj.out_features == 2 * self.num_heads * self.head_dim:
+        key_states = None
+        value_states = None
+        if self.q_gate_proj is not None:
+            gate = self.q_gate_proj(hidden_states)
+        elif self.q_proj.out_features == 2 * self.num_heads * self.head_dim:
             reshaped = query_states.view(bsz, q_len, self.num_heads, self.head_dim * 2)
             query_states, gate = torch.split(reshaped, self.head_dim, dim=-1)
             gate = gate.reshape(bsz, q_len, -1)
         else:
             gate = None
 
-        key_states = self.k_proj(hidden_states)
-        value_states = self.v_proj(hidden_states)
+        qk_norm_after_rope = getattr(self, 'qk_norm_after_rope', getattr(self.config, 'qk_norm_after_rope', False))
         query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim)
-        key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim)
-        value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim)
-        # openelm model has qk_norm
-        if hasattr(self, 'q_norm') and self.q_norm is not None and \
-           hasattr(self, 'k_norm') and self.k_norm is not None:
-            query_states = self.q_norm(query_states)
-            key_states = self.k_norm(key_states)
+        q_norm_before_rope = not qk_norm_after_rope and hasattr(self, 'q_norm') and self.q_norm is not None
+
+        # KV sharing: for shared layers, reuse KV from source layer (test mode only)
+        shared_kv_cache = getattr(self, '_shared_kv_cache', None)
+        use_shared_kv = (self.is_kv_shared_layer and shared_kv_cache is not None
+                         and self.kv_shared_layer_index in shared_kv_cache
+                         and not torch.onnx.is_in_onnx_export())
+        k_norm_before_rope = False
+
+        if use_shared_kv:
+            key_states, value_states = shared_kv_cache[self.kv_shared_layer_index]
+        elif self.k_proj is not None:
+            key_states = self.k_proj(hidden_states)
+            if self.k_eq_v:
+                value_states = key_states.clone()
+            else:
+                value_states = self.v_proj(hidden_states)
+            key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim)
+            value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim)
+            k_norm_before_rope = not qk_norm_after_rope and hasattr(self, 'k_norm') and self.k_norm is not None
+            # gemma4 has v_norm (RMSNorm without scale)
+            if hasattr(self, 'v_norm') and self.v_norm is not None:
+                value_states = self.v_norm(value_states)
+        else:
+            # Pure KV sharing layer: no local K/V projections (e.g. gemma4 in HF>=5.5.4)
+            # Dummy K/V for ONNX tracing; FusedAttention handles sharing via kv_shared_layer_index
+            key_states = query_states.new_zeros(bsz, q_len, self.num_key_value_heads, self.head_dim)
+            value_states = key_states
+            k_norm_before_rope = False
 
         kv_seq_len = key_states.shape[1]
         if self.past_key_value is not None:
             kv_seq_len += self.past_key_value[0].shape[1]
         # rope
         if self.rotary is not None:
+            q_norm_fusable = (
+                not q_norm_before_rope
+                or (hasattr(self.q_norm, 'weight') and self.q_norm.weight is not None)
+            )
+            k_norm_fusable = (
+                not k_norm_before_rope
+                or (hasattr(self.k_norm, 'weight') and self.k_norm.weight is not None)
+            )
             cos, sin = rotary_pos_emb[0], rotary_pos_emb[1]
-            query_states = self.rotary.apply_rotary_pos(query_states, cos, sin)
-            key_states = self.rotary.apply_rotary_pos(key_states, cos, sin)
+            use_fused_rope = (
+                self.export_fused_attn and torch.onnx.is_in_onnx_export()
+                and self.export_fused_rope
+                and not qk_norm_after_rope
+                and not use_shared_kv
+                and not self.k_eq_v
+                and self.k_proj is not None
+                and q_norm_fusable
+                and k_norm_fusable
+                and not getattr(getattr(self.config, 'export_args', None), 'lora_split', False)
+                and self.rotary.model_type not in ['chatglm', 'chatglm2', 'ernie4_5', 'glm_ocr']
+                and cos.shape[-1] == self.rope_cut_head_dim
+                and sin.shape[-1] == self.rope_cut_head_dim
+            )
+            fuse_q_norm = use_fused_rope and q_norm_before_rope
+            fuse_k_norm = use_fused_rope and k_norm_before_rope
+            if use_fused_rope:
+                query_states, key_states = self.fused_rope(
+                    query_states,
+                    key_states,
+                    cos,
+                    sin,
+                    self.q_norm if fuse_q_norm else None,
+                    self.k_norm if fuse_k_norm else None,
+                )
+            else:
+                # Most models apply q/k norm before rotary, but Hunyuan applies it after rotary.
+                if q_norm_before_rope:
+                    query_states = self.q_norm(query_states)
+                if k_norm_before_rope:
+                    key_states = self.k_norm(key_states)
+                query_states = self.rotary.apply_rotary_pos(query_states, cos, sin)
+                if not use_shared_kv and self.k_proj is not None:
+                    key_states = self.rotary.apply_rotary_pos(key_states, cos, sin)
+        elif q_norm_before_rope or k_norm_before_rope:
+            if q_norm_before_rope:
+                query_states = self.q_norm(query_states)
+            if k_norm_before_rope:
+                key_states = self.k_norm(key_states)
+
+        if qk_norm_after_rope:
+            if hasattr(self, 'q_norm') and self.q_norm is not None:
+                query_states = self.q_norm(query_states)
+            if not use_shared_kv and self.k_proj is not None and hasattr(self, 'k_norm') and self.k_norm is not None:
+                key_states = self.k_norm(key_states)
 
         # MobileLLM model llama4_text has qk_norm after rotary
         if hasattr(self, 'qk_norm') and self.qk_norm is not None :
@@ -172,16 +351,29 @@ class Attention(torch.nn.Module):
             key_states = torch.cat((past_key, key_states), dim=1)
             value_states = torch.cat((past_value, value_states), dim=1)
 
-        self.past_key_value = torch.stack((key_states, value_states))
+        if not use_shared_kv:
+            self.past_key_value = torch.stack((key_states, value_states))
+
         query_states = query_states.transpose(1, 2)
-        key_states = key_states.permute([0, 2, 3, 1])
-        value_states = value_states.transpose(1, 2)
+
+        if use_shared_kv:
+            # Shared KV is already in transposed format [B, heads, head_dim, seq] / [B, heads, seq, head_dim]
+            pass
+        else:
+            key_states = key_states.permute([0, 2, 3, 1])
+            value_states = value_states.transpose(1, 2)
+
+            # Store KV for sharing (source layers that other layers will read from)
+            if self.store_full_length_kv and shared_kv_cache is not None:
+                shared_kv_cache[self.layer_id] = (key_states.clone(), value_states.clone())
+
         # repeat k/v heads if n_kv_heads < n_heads
         key_states = repeat_kv(key_states, self.num_key_value_groups)
         value_states = repeat_kv(value_states, self.num_key_value_groups)
         #------- attention ----------
         # query_states @ key_states
-        attn_weights = torch.matmul(query_states, key_states) / math.sqrt(self.head_dim)
+        attn_scaling = getattr(self, 'attn_scaling', 1.0 / math.sqrt(self.head_dim))
+        attn_weights = torch.matmul(query_states, key_states) * attn_scaling
         # attention_mask
         if attention_mask.dtype in (torch.bool, torch.int32):
             # chatglm
@@ -464,6 +656,9 @@ class ShortConvAttention(torch.nn.Module):
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        # Note: ShortConvAttention is mask-free; `attention_mask` is accepted
+        # only to keep the call signature uniform with `Attention.forward` and
+        # is intentionally unused.
         batch_size, seq_len, _ = hidden_states.shape
 
         # in_proj: [B, L, H] -> [B, L, 3H]
@@ -550,6 +745,9 @@ class LinearAttention(torch.nn.Module):
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+        # Note: LinearAttention is mask-free; `attention_mask` is accepted
+        # only to keep the call signature uniform with `Attention.forward` and
+        # is intentionally unused.
         batch_size, seq_len, _ = hidden_states.shape
 
         # 1. Linear Projections
@@ -731,14 +929,18 @@ class Rotary(torch.nn.Module):
         if self.model_type == 'chatglm':
             self.rotary_dim = config.head_dim // 2
 
-        # Qwen3.5
+        # Qwen3.5 / LFM2 style: flat rope_parameters dict
         if hasattr(config, 'rope_parameters') and config.rope_parameters is not None:
-            if 'rope_theta' in config.rope_parameters:
-                self.rope_theta = config.rope_parameters['rope_theta']
-            if 'partial_rotary_factor' in config.rope_parameters:
-                self.partial_rotary_factor = config.rope_parameters['partial_rotary_factor']
-                self.rotary_dim = int(self.rotary_dim * self.partial_rotary_factor)
-            config.rope_scaling = config.rope_parameters
+            rp = config.rope_parameters
+            # Detect gemma4-style per-layer-type rope_parameters (dict of dicts)
+            is_per_layer_type = any(isinstance(v, dict) for v in rp.values())
+            if not is_per_layer_type:
+                if 'rope_theta' in rp:
+                    self.rope_theta = rp['rope_theta']
+                if 'partial_rotary_factor' in rp:
+                    self.partial_rotary_factor = rp['partial_rotary_factor']
+                    self.rotary_dim = int(self.rotary_dim * self.partial_rotary_factor)
+                config.rope_scaling = rp
 
         self.mrope_section = None
         self.theta_sections = None
@@ -847,10 +1049,13 @@ class Rotary(torch.nn.Module):
             return self.chatglm_rotary_pos(x, cos, sin)
         if self.model_type == 'chatglm2':
             return self.chatglm2_rotary_pos(x, cos, sin)
-        if self.model_type in ['phi-msft', 'qwen3_5', 'qwen3_5_moe']:
+        if self.model_type in ['phi-msft', 'qwen3_5', 'qwen3_5_moe', 'qwen3_5_text']:
             return self.phi_rotary_pos(x, cos, sin)
         if self.model_type in ['ernie4_5', 'glm_ocr']:
             return self.ernie_rotary_pos(x, cos, sin)
+        # Auto-detect partial rotary: cos/sin dim < x dim
+        if cos.shape[-1] < x.shape[-1]:
+            return self.phi_rotary_pos(x, cos, sin)
         return self.llama_rotary_pos(x, cos, sin)
 
     def llama_rotary_pos(self, x, cos, sin):
@@ -865,7 +1070,9 @@ class Rotary(torch.nn.Module):
         return x
 
     def phi_rotary_pos(self, x, cos, sin):
-        x, x_pass = x[..., :self.rotary_dim], x[..., self.rotary_dim:]
+        # Use cos dim to determine rotary_dim (handles per-layer different rotary_dim)
+        rotary_dim = cos.shape[-1]
+        x, x_pass = x[..., :rotary_dim], x[..., rotary_dim:]
         x = (x * cos) + (rotate_half(x) * sin)
         return torch.cat((x, x_pass), dim=-1)
 
@@ -1118,6 +1325,35 @@ class Decoder(torch.nn.Module):
         if 'mlp' in mapper and hasattr(self.mlp, 'experts'):
             self.mlp = Mlp(self.mlp, mapper, layer_id)
 
+        # gemma4 MoE: router and experts are at decoder layer level (parallel to dense MLP)
+        self.has_gemma4_moe = hasattr(self, 'experts') and self.experts is not None
+        if self.has_gemma4_moe:
+            original_experts = self.experts
+            num_experts = original_experts.num_experts
+            hidden_size = original_experts.hidden_dim
+            expert_dim = original_experts.intermediate_dim
+            act_fn = original_experts.act_fn
+            # Refactor 3D Parameter experts into ModuleList of Qwen3Expert
+            new_experts_list = torch.nn.ModuleList()
+            for i in range(num_experts):
+                expert_mlp = Qwen3Expert(hidden_size, expert_dim, act_fn)
+                expert_mlp.gate_up_proj_linear.weight.data = original_experts.gate_up_proj.data[i]
+                expert_mlp.down_proj_linear.weight.data = original_experts.down_proj.data[i]
+                new_experts_list.append(expert_mlp)
+            self.experts = new_experts_list
+            # Extract gate Linear from router (router has norm+scale+proj+per_expert_scale)
+            self.moe_gate = torch.nn.Linear(hidden_size, num_experts, bias=False)
+            self.moe_gate.weight.data = self.router.proj.weight.data
+            self.moe_router_norm = self.router.norm
+            self.moe_router_scale = self.router.scale.data
+            self.moe_router_scalar_root = self.router.scalar_root_size
+            self.moe_per_expert_scale = self.router.per_expert_scale.data
+            self.moe_num_experts = num_experts
+            self.moe_top_k = config.origin_config.text_config.top_k_experts
+            self.custom_moe = MoE(num_experts, self.moe_top_k, layer_id)
+            self.export_moe = False
+            del self.router
+
         self.layer_type = 'full_attention'
         if hasattr(self, 'self_attn') and self.self_attn is not None:
             self.self_attn = Attention(self.self_attn, layer_id, config, rotary, mapper)
@@ -1168,12 +1404,45 @@ class Decoder(torch.nn.Module):
             mlp_output = self.mlp(mlp_input)
             hidden_states = mlp_input * self.alpha + mlp_output
         elif hasattr(self, 'pre_feedforward_layernorm'):
-            # gemma2
+            # gemma2 / gemma4
             hidden_states = self.post_attention_layernorm(hidden_states)
             hidden_states = residual + hidden_states
             residual = hidden_states
             hidden_states = self.pre_feedforward_layernorm(hidden_states)
             hidden_states = self.mlp(hidden_states)
+            if self.has_gemma4_moe:
+                # gemma4 MoE: dense MLP + MoE experts in parallel
+                mlp_output = self.post_feedforward_layernorm_1(hidden_states)
+                # Router uses residual (pre-MLP hidden states)
+                router_input = residual.reshape(-1, residual.shape[-1])
+                # Routing: norm -> scale -> proj -> softmax -> topk -> normalize -> per_expert_scale
+                normed = self.moe_router_norm(router_input)
+                normed = normed * self.moe_router_scale * self.moe_router_scalar_root
+                router_logits = self.moe_gate(normed)
+                routing_weights = F.softmax(router_logits, dim=-1, dtype=torch.float)
+                routing_weights, selected_experts = torch.topk(routing_weights, self.moe_top_k, dim=-1)
+                routing_weights = routing_weights / (routing_weights.sum(dim=-1, keepdim=True) + 1e-6)
+                routing_weights = (routing_weights * self.moe_per_expert_scale[selected_experts]).to(router_input.dtype)
+                if self.export_moe:
+                    expert_input = self.pre_feedforward_layernorm_2(router_input)
+                    expert_output = self.custom_moe(expert_input, routing_weights, selected_experts)
+                else:
+                    # Expert computation
+                    expert_input = self.pre_feedforward_layernorm_2(router_input)
+                    batch_size, sequence_length = residual.shape[0], residual.shape[1]
+                    hidden_dim = residual.shape[-1]
+                    expert_output = torch.zeros_like(router_input)
+                    expert_mask = F.one_hot(selected_experts, num_classes=self.moe_num_experts).permute(2, 1, 0)
+                    expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
+                    for expert_idx in expert_hit:
+                        expert_idx = expert_idx[0]
+                        idx, top_x = torch.where(expert_mask[expert_idx])
+                        current_state = expert_input[top_x]
+                        current_hidden = self.experts[expert_idx](current_state) * routing_weights[top_x, idx, None]
+                        expert_output.index_add_(0, top_x, current_hidden.to(expert_output.dtype))
+                expert_output = expert_output.reshape(residual.shape)
+                expert_output = self.post_feedforward_layernorm_2(expert_output)
+                hidden_states = mlp_output + expert_output
             hidden_states = self.post_feedforward_layernorm(hidden_states)
             hidden_states = residual + hidden_states
         elif hasattr(self, 'scale_depth'):
@@ -1191,13 +1460,34 @@ class Decoder(torch.nn.Module):
             hidden_states = self.mlp(hidden_states)
             hidden_states = residual + hidden_states
 
+        # gemma4 PLE (Per-Layer Embeddings)
+        if hasattr(self, 'per_layer_input_gate') and self.per_layer_input_gate is not None:
+            per_layer_input = getattr(self, '_per_layer_input', None)
+            if per_layer_input is not None:
+                residual = hidden_states
+                hidden_states = self.per_layer_input_gate(hidden_states)
+                hidden_states = self.act_fn(hidden_states)
+                hidden_states = hidden_states * per_layer_input
+                hidden_states = self.per_layer_projection(hidden_states)
+                hidden_states = self.post_per_layer_input_norm(hidden_states)
+                hidden_states = residual + hidden_states
+
+        # gemma4 layer_scalar
+        if hasattr(self, 'layer_scalar') and self.layer_scalar is not None:
+            hidden_states = hidden_states * self.layer_scalar
+
         return hidden_states
 
 class Lm(torch.nn.Module):
-    def __init__(self, lm_):
+    def __init__(self, lm_, final_logit_softcapping=None):
         super().__init__()
         self.lm = lm_
+        self.final_logit_softcapping = final_logit_softcapping
 
     def forward(self, hidden_states):
         m_logits = self.lm(hidden_states)
+        if self.final_logit_softcapping is not None:
+            m_logits = m_logits / self.final_logit_softcapping
+            m_logits = torch.tanh(m_logits)
+            m_logits = m_logits * self.final_logit_softcapping
         return m_logits

@@ -344,7 +344,9 @@ class ModelMapper:
                 'q_proj': 'q_proj',
                 'k_proj': 'k_proj',
                 'v_proj': 'v_proj',
-                'o_proj': 'o_proj'
+                'o_proj': 'o_proj',
+                'q_norm': 'q_norm',
+                'k_norm': 'k_norm'
             }
         }
         self.regist('internvl_chat', intervl_map)
@@ -370,6 +372,10 @@ class ModelMapper:
                 'num_hidden_layers': 'text_config.num_hidden_layers',
                 'num_key_value_heads': 'text_config.num_key_value_heads',
                 'rope_theta': 'text_config.rope_theta',
+                'rope_parameters': 'text_config.rope_parameters',
+                'max_position_embeddings': 'text_config.max_position_embeddings',
+                'layer_types': 'text_config.layer_types',
+                'sliding_window': 'text_config.sliding_window',
 
                 'image_size': 'vision_config.image_size',
                 'num_channels': 'vision_config.num_channels',
@@ -416,6 +422,7 @@ class ModelMapper:
                 'num_hidden_layers': 'num_hidden_layers',
                 'num_key_value_heads': 'num_key_value_heads',
                 'rope_theta': 'rope_theta',
+                'rope_parameters': 'rope_parameters',
                 'max_position_embeddings': 'max_position_embeddings',
                 'model_type': 'model_type',
                 'vocab_size': 'vocab_size',
@@ -452,6 +459,71 @@ class ModelMapper:
             }
         }
         self.regist('gemma3_text', gemma3_text_map)
+
+    def regist_gemma4(self):
+        gemma4_config = {
+            'hidden_size': 'text_config.hidden_size',
+            'head_dim': 'text_config.head_dim',
+            'num_attention_heads': 'text_config.num_attention_heads',
+            'num_hidden_layers': 'text_config.num_hidden_layers',
+            'num_key_value_heads': 'text_config.num_key_value_heads',
+            'rope_parameters': 'text_config.rope_parameters',
+            'max_position_embeddings': 'text_config.max_position_embeddings',
+            'layer_types': 'text_config.layer_types',
+            'sliding_window': 'text_config.sliding_window',
+            'tie_word_embeddings': 'tie_word_embeddings',
+        }
+        gemma4_model = {
+            'lm': 'lm_head',
+            'embed': 'model.language_model.embed_tokens',
+            'blocks': 'model.language_model.layers',
+            'final_layernorm': 'model.language_model.norm',
+            'rotary_emb': 'model.language_model.rotary_emb',
+            'visual': 'model.vision_tower',
+            'audio': 'model.audio_tower',
+            'embed_vision': 'model.embed_vision',
+            'embed_audio': 'model.embed_audio',
+            # PLE (Per-Layer Embeddings) components
+            'embed_tokens_per_layer': 'model.language_model.embed_tokens_per_layer',
+            'per_layer_model_projection': 'model.language_model.per_layer_model_projection',
+            'per_layer_projection_norm': 'model.language_model.per_layer_projection_norm',
+        }
+        gemma4_decoder = {
+            'self_attn': 'self_attn',
+            'mlp': 'mlp',
+            'input_layernorm': 'input_layernorm',
+            'post_attention_layernorm': 'post_attention_layernorm',
+            'pre_feedforward_layernorm': 'pre_feedforward_layernorm',
+            'post_feedforward_layernorm': 'post_feedforward_layernorm',
+            'layer_scalar': 'layer_scalar',
+            'per_layer_input_gate': 'per_layer_input_gate',
+            'per_layer_projection': 'per_layer_projection',
+            'post_per_layer_input_norm': 'post_per_layer_input_norm',
+            'act_fn': 'act_fn',
+            # MoE components (gemma4 26B-A4B)
+            'router': 'router',
+            'experts': 'experts',
+            'post_feedforward_layernorm_1': 'post_feedforward_layernorm_1',
+            'post_feedforward_layernorm_2': 'post_feedforward_layernorm_2',
+            'pre_feedforward_layernorm_2': 'pre_feedforward_layernorm_2',
+        }
+        gemma4_attention = {
+            'q_proj': 'q_proj',
+            'k_proj': 'k_proj',
+            'v_proj': 'v_proj',
+            'o_proj': 'o_proj',
+            'q_norm': 'q_norm',
+            'k_norm': 'k_norm',
+            'v_norm': 'v_norm',
+            'k_eq_v': 'use_alternative_attention',
+        }
+        gemma4_map = {
+            'config': gemma4_config,
+            'model': gemma4_model,
+            'decoder': gemma4_decoder,
+            'attention': gemma4_attention,
+        }
+        self.regist('gemma4', gemma4_map)
 
     def register_openelm(self):
         openelm_config = {
@@ -979,6 +1051,8 @@ class ModelMapper:
             'num_key_value_heads': 'text_config.num_key_value_heads',
             'rope_parameters': 'text_config.rope_parameters',
             'max_position_embeddings': 'text_config.max_position_embeddings',
+            'layer_types': 'text_config.layer_types',
+            'sliding_window': 'text_config.full_attention_interval',
             'rms_norm_eps': 'text_config.rms_norm_eps',
             'linear_conv_kernel_dim': 'text_config.linear_conv_kernel_dim',
             'linear_key_head_dim': 'text_config.linear_key_head_dim',
@@ -1024,6 +1098,19 @@ class ModelMapper:
         qwen3_5_moe_map = copy.deepcopy(qwen3_5_map)
         qwen3_5_moe_map['mlp'] = qwen3_5_moe_mlp
         self.regist('qwen3_5_moe', qwen3_5_moe_map)
+        # text-only variant (Qwen3_5ForCausalLM): no visual tower; config fields
+        # live at the top level rather than under text_config.*, and the live
+        # module hierarchy is flat (model.layers, not language_model.layers)
+        qwen3_5_text_config = {k: v.replace('text_config.', '') for k, v in qwen3_5_config.items()}
+        qwen3_5_text_model = {k: v for k, v in self.default_model.items() if k != 'visual'}
+        qwen3_5_text_map = {
+            'config': qwen3_5_text_config,
+            'model': qwen3_5_text_model,
+            'decoder': self.default_decoder,
+            'attention': self.default_attention,
+            'linear_attention': qwen3_5_linear_attention
+        }
+        self.regist('qwen3_5_text', qwen3_5_text_map)
 
     def init_default_map(self):
         # default map is `LlamaForCausalLM`

@@ -37,6 +37,24 @@ static bool _hasExtension(const std::vector<VkExtensionProperties>& exts, const 
     });
 }
 
+static VulkanDevice::SubgroupInfo _querySubgroupInfo(VkPhysicalDevice physicalDevice) {
+    VulkanDevice::SubgroupInfo info;
+    VkPhysicalDeviceProperties2 deviceProperties2 = {};
+    deviceProperties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+
+    VkPhysicalDeviceSubgroupProperties subgroupProperties = {};
+    subgroupProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES;
+
+    deviceProperties2.pNext = &subgroupProperties;
+    vkGetPhysicalDeviceProperties2(physicalDevice, &deviceProperties2);
+
+    info.size = subgroupProperties.subgroupSize;
+    info.stages = subgroupProperties.supportedStages;
+    info.ops = subgroupProperties.supportedOperations;
+    info.quadAllStages = subgroupProperties.quadOperationsInAllStages;
+    return info;
+}
+
 VulkanDevice::VulkanDevice(std::shared_ptr<VulkanInstance> instance)
     : mOwner(true),
       mInstance(instance),
@@ -141,6 +159,40 @@ VulkanDevice::VulkanDevice(std::shared_ptr<VulkanInstance> instance)
         pNextChain = &mCoopMatInfo.enabledCoopMatFeatures;
     }
 
+    // Configure shaderInt8 + 8-bit storage (W8A8 cooperative-matrix path).
+    // Chained after FP16 so we can merge into FP16's existing feature struct
+    // when both succeed via the same path.
+    checkInt8(availableDeviceExtensions);
+    if (mInt8Info.supportInt8) {
+        auto pushExtIfMissing = [&](const char* name) {
+            for (const char* e : deviceExtensions) {
+                if (std::strcmp(e, name) == 0) return;
+            }
+            deviceExtensions.push_back(name);
+        };
+        if (mInt8Info.int8FromExtension) {
+            pushExtIfMissing(VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME);
+            pushExtIfMissing(VK_KHR_8BIT_STORAGE_EXTENSION_NAME);
+            if (mFP16Info.supportFP16 && mFP16Info.FP16FromExtension) {
+                // FP16 already chained ShaderFloat16Int8Features; just merge.
+                mFP16Info.enabledShaderFloat16Int8Features.shaderInt8 = VK_TRUE;
+            } else {
+                mInt8Info.enabledShaderInt8Features.pNext = pNextChain;
+                pNextChain = &mInt8Info.enabledShaderInt8Features;
+            }
+            mInt8Info.enabled8BitStorageFeatures.pNext = pNextChain;
+            pNextChain = &mInt8Info.enabled8BitStorageFeatures;
+        } else {
+            if (mFP16Info.supportFP16 && !mFP16Info.FP16FromExtension) {
+                mFP16Info.enabledVulkan12Features.shaderInt8 = VK_TRUE;
+                mFP16Info.enabledVulkan12Features.storageBuffer8BitAccess = VK_TRUE;
+            } else {
+                mInt8Info.enabledVulkan12Int8Features.pNext = pNextChain;
+                pNextChain = &mInt8Info.enabledVulkan12Int8Features;
+            }
+        }
+    }
+
     deviceFeatures2.pNext = pNextChain;
 
     // Create Device. Get Queue.
@@ -169,19 +221,7 @@ VulkanDevice::VulkanDevice(std::shared_ptr<VulkanInstance> instance)
     vkGetPhysicalDeviceProperties(mPhysicalDevice, &mDeviceProty);
     vkGetPhysicalDeviceMemoryProperties(mPhysicalDevice, &mMemoryProty);
     mLocalMemorySize = _getLocalMemorySize(mMemoryProty);
-
-    // query subgroupSize
-    {
-        VkPhysicalDeviceProperties2 deviceProperties2 = {};
-        deviceProperties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
-
-        VkPhysicalDeviceSubgroupProperties subgroupProperties = {};
-        subgroupProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES;
-
-        deviceProperties2.pNext = &subgroupProperties;
-        vkGetPhysicalDeviceProperties2(mPhysicalDevice, &deviceProperties2);
-        mSubgroupSize = subgroupProperties.subgroupSize;
-    }
+    mSubgroupInfo = _querySubgroupInfo(mPhysicalDevice);
 #ifdef MNN_VULKAN_PRINT_EXT
     uint32_t pPropertyCount;
     vkEnumerateInstanceExtensionProperties(nullptr, &pPropertyCount, nullptr);
@@ -197,6 +237,14 @@ VulkanDevice::VulkanDevice(std::shared_ptr<VulkanInstance> instance)
     FUNC_PRINT(mDeviceProty.limits.maxComputeSharedMemorySize);
     FUNC_PRINT(mLocalMemorySize);
 #endif
+
+{
+    uint32_t extensionCount = 0;
+    vkEnumerateDeviceExtensionProperties(mPhysicalDevice, nullptr, &extensionCount, nullptr);
+    std::vector<VkExtensionProperties> extensions(extensionCount);
+    vkEnumerateDeviceExtensionProperties(mPhysicalDevice, nullptr, &extensionCount, extensions.data());
+}
+
 }
 
 VulkanDevice::VulkanDevice(std::shared_ptr<VulkanInstance> instance, VkPhysicalDevice physicalDevice, VkDevice device,
@@ -210,6 +258,7 @@ VulkanDevice::VulkanDevice(std::shared_ptr<VulkanInstance> instance, VkPhysicalD
       vkGetPhysicalDeviceProperties(mPhysicalDevice, &mDeviceProty);
       vkGetPhysicalDeviceMemoryProperties(mPhysicalDevice, &mMemoryProty);
       mLocalMemorySize = _getLocalMemorySize(mMemoryProty);
+      mSubgroupInfo = _querySubgroupInfo(mPhysicalDevice);
 }
 
 VulkanDevice::~VulkanDevice() {
@@ -522,10 +571,20 @@ const VkResult VulkanDevice::createDescriptorSetLayout(VkDescriptorSetLayout& se
 const VkResult VulkanDevice::createPipelineLayout(VkPipelineLayout& pipelineLayout,
                                                   const VkDescriptorSetLayout& setLayout,
                                                   const VkAllocationCallbacks* allocator) const {
+    // Always provide a push-constant range. Some shaders rely on push constants, and Vulkan requires
+    // the pipeline layout to declare supported ranges for vkCmdPushConstants.
+    // Vulkan spec minimum maxPushConstantsSize is 128 bytes.
+    VkPushConstantRange pcRange;
+    pcRange.stageFlags = VK_SHADER_STAGE_ALL;
+    pcRange.offset = 0;
+    pcRange.size = 128;
+
     VkPipelineLayoutCreateInfo layoutInfo = {};
-    layoutInfo.sType                      = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    layoutInfo.setLayoutCount             = 1;
-    layoutInfo.pSetLayouts                = &setLayout;
+    layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    layoutInfo.setLayoutCount = 1;
+    layoutInfo.pSetLayouts = &setLayout;
+    layoutInfo.pushConstantRangeCount = 1;
+    layoutInfo.pPushConstantRanges = &pcRange;
     return vkCreatePipelineLayout(mDevice, &layoutInfo, allocator, &pipelineLayout);
 }
 
@@ -609,10 +668,13 @@ void VulkanDevice::checkFP16(const std::vector<VkExtensionProperties>& available
     mFP16Info.enabledVulkan12Features = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
     mFP16Info.enabledShaderFloat16Int8Features = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES};
     mFP16Info.enabled16BitStorageFeatures = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES};
-    
-    PFN_vkGetPhysicalDeviceFeatures2 getFeatures2 = vkGetPhysicalDeviceFeatures2;
+
+    VkInstance instance = mInstance->get();
+    auto getFeatures2 =
+        (PFN_vkGetPhysicalDeviceFeatures2)vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceFeatures2");
     if (!getFeatures2) {
-        getFeatures2 = vkGetPhysicalDeviceFeatures2KHR;
+        getFeatures2 =
+            (PFN_vkGetPhysicalDeviceFeatures2)vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceFeatures2KHR");
     }
     if (!getFeatures2) {
         return;
@@ -669,10 +731,16 @@ void VulkanDevice::checkCoopMat(const std::vector<VkExtensionProperties>& availa
     mCoopMatInfo.fp16CoopMatShape.clear();
     mCoopMatInfo.selectedFP32CoopMatShape.clear();
     mCoopMatInfo.selectedFP16CoopMatShape.clear();
+    mCoopMatInfo.supportS8S8S32 = false;
+    mCoopMatInfo.s8CoopMatShape.clear();
+    mCoopMatInfo.selectedS8CoopMatShape.clear();
 
-    PFN_vkGetPhysicalDeviceFeatures2 getFeatures2 = vkGetPhysicalDeviceFeatures2;
+    VkInstance instance = mInstance->get();
+    auto getFeatures2 =
+        (PFN_vkGetPhysicalDeviceFeatures2)vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceFeatures2");
     if (!getFeatures2) {
-        getFeatures2 = vkGetPhysicalDeviceFeatures2KHR;
+        getFeatures2 =
+            (PFN_vkGetPhysicalDeviceFeatures2)vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceFeatures2KHR");
     }
     if (!getFeatures2) {
         return;
@@ -691,7 +759,6 @@ void VulkanDevice::checkCoopMat(const std::vector<VkExtensionProperties>& availa
     if (mCoopMatInfo.enabledCoopMatFeatures.cooperativeMatrix != VK_TRUE) return;
 
     // 3. Query Properties (Shapes)
-    VkInstance instance = mInstance->get();
     auto fpGetCoopMat = reinterpret_cast<PFN_vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR>(
             vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR"));
 
@@ -709,12 +776,14 @@ void VulkanDevice::checkCoopMat(const std::vector<VkExtensionProperties>& availa
 
     uint32_t maxFP16Size = 0;
     uint32_t maxFP32Size = 0;
+    uint32_t maxS8Size = 0;
 
     for (const auto & p : props) {
         if (p.scope != VK_SCOPE_SUBGROUP_KHR || p.saturatingAccumulation != VK_FALSE) continue;
 
         bool isFP16 = (p.AType == VK_COMPONENT_TYPE_FLOAT16_KHR && p.BType == VK_COMPONENT_TYPE_FLOAT16_KHR && p.CType == VK_COMPONENT_TYPE_FLOAT16_KHR && p.ResultType == VK_COMPONENT_TYPE_FLOAT16_KHR);
         bool isFP32 = (p.AType == VK_COMPONENT_TYPE_FLOAT32_KHR && p.BType == VK_COMPONENT_TYPE_FLOAT32_KHR && p.CType == VK_COMPONENT_TYPE_FLOAT32_KHR && p.ResultType == VK_COMPONENT_TYPE_FLOAT32_KHR);
+        bool isS8S8S32 = (p.AType == VK_COMPONENT_TYPE_SINT8_KHR && p.BType == VK_COMPONENT_TYPE_SINT8_KHR && p.CType == VK_COMPONENT_TYPE_SINT32_KHR && p.ResultType == VK_COMPONENT_TYPE_SINT32_KHR);
 
         uint32_t size = p.MSize * p.NSize * p.KSize;
 
@@ -732,9 +801,74 @@ void VulkanDevice::checkCoopMat(const std::vector<VkExtensionProperties>& availa
                 mCoopMatInfo.selectedFP32CoopMatShape = {p.MSize, p.NSize, p.KSize};
             }
         }
+        if (isS8S8S32) {
+            mCoopMatInfo.s8CoopMatShape.push_back({p.MSize, p.NSize, p.KSize});
+            if (size > maxS8Size) {
+                maxS8Size = size;
+                mCoopMatInfo.selectedS8CoopMatShape = {p.MSize, p.NSize, p.KSize};
+            }
+        }
     }
 
     mCoopMatInfo.supportCoopMat = true;
+    mCoopMatInfo.supportS8S8S32 = !mCoopMatInfo.s8CoopMatShape.empty();
+}
+
+void VulkanDevice::checkInt8(const std::vector<VkExtensionProperties>& availableExts) {
+    mInt8Info.supportInt8 = false;
+    mInt8Info.int8FromExtension = false;
+    mInt8Info.enabledShaderInt8Features = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES};
+    mInt8Info.enabled8BitStorageFeatures = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES};
+    mInt8Info.enabledVulkan12Int8Features = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+
+    VkInstance instance = mInstance->get();
+    auto getFeatures2 =
+        (PFN_vkGetPhysicalDeviceFeatures2)vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceFeatures2");
+    if (!getFeatures2) {
+        getFeatures2 =
+            (PFN_vkGetPhysicalDeviceFeatures2)vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceFeatures2KHR");
+    }
+    if (!getFeatures2) {
+        return;
+    }
+
+    // 1. Vulkan 1.2 core path
+    {
+        VkPhysicalDeviceVulkan12Features vk12 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+        VkPhysicalDeviceFeatures2 features2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+        features2.pNext = &vk12;
+        getFeatures2(mPhysicalDevice, &features2);
+        if (vk12.shaderInt8 == VK_TRUE && vk12.storageBuffer8BitAccess == VK_TRUE) {
+            mInt8Info.supportInt8 = true;
+            mInt8Info.enabledVulkan12Int8Features.shaderInt8 = VK_TRUE;
+            mInt8Info.enabledVulkan12Int8Features.storageBuffer8BitAccess = VK_TRUE;
+            return;
+        }
+    }
+
+    // 2. KHR extension path
+    {
+        if (!_hasExtension(availableExts, VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME) ||
+            !_hasExtension(availableExts, VK_KHR_8BIT_STORAGE_EXTENSION_NAME)) {
+            return;
+        }
+
+        VkPhysicalDeviceShaderFloat16Int8Features khrFloat16Int8 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES};
+        VkPhysicalDevice8BitStorageFeatures khr8Bit = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES};
+        khrFloat16Int8.pNext = &khr8Bit;
+
+        VkPhysicalDeviceFeatures2 features2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+        features2.pNext = &khrFloat16Int8;
+        getFeatures2(mPhysicalDevice, &features2);
+
+        if (khrFloat16Int8.shaderInt8 == VK_TRUE && khr8Bit.storageBuffer8BitAccess == VK_TRUE) {
+            mInt8Info.supportInt8 = true;
+            mInt8Info.int8FromExtension = true;
+            mInt8Info.enabledShaderInt8Features.shaderInt8 = VK_TRUE;
+            mInt8Info.enabled8BitStorageFeatures.storageBuffer8BitAccess = VK_TRUE;
+            return;
+        }
+    }
 }
 
 } // namespace MNN

@@ -15,6 +15,13 @@
 #   download_kleidiai_and_collect_sources()
 #   Use MNN_SOURCES_KLEIDIAI and KLEIDIAI_FILES_SME2 in subsequent build steps.
 # ------------------------------------------------------------------------------
+
+# Capture the MNN cmake/ directory at include time. Inside a CMake function,
+# CMAKE_CURRENT_LIST_DIR resolves to the *caller's* directory, so we must
+# snapshot it here (file scope) to always get the MNN repo root regardless of
+# whether MNN is the top-level project or an embedded dependency.
+set(_MNN_KLEIDIAI_CMAKE_LIST_DIR "${CMAKE_CURRENT_LIST_DIR}")
+
 function (download_kleidiai_and_collect_sources)
     set(MNN_SOURCES_KLEIDIAI "" PARENT_SCOPE)
     set(KLEIDIAI_FILES_SME2 "" PARENT_SCOPE)
@@ -22,15 +29,19 @@ function (download_kleidiai_and_collect_sources)
     # Disable the KleidiAI tests
     set(KLEIDIAI_BUILD_TESTS OFF)
 
-    set(KLEIDIAI_COMMIT_SHA "1.14.0")
+    set(KLEIDIAI_COMMIT_SHA "1.16.0")
     set(KLEIDIAI_DOWNLOAD_URL "https://github.com/ARM-software/kleidiai/archive/refs/tags/v${KLEIDIAI_COMMIT_SHA}.tar.gz")
-    set(KLEIDIAI_ARCHIVE_MD5 "45e110675d93f99f82c23a1afcca76bc")
+    set(KLEIDIAI_ARCHIVE_MD5 "0a9e9008adb6031f9e8cf70dff4a3321")
 
     set(_kleidiai_src_dir "")
     if(DEFINED KLEIDIAI_SRC_DIR AND EXISTS "${KLEIDIAI_SRC_DIR}")
         set(_kleidiai_src_dir "${KLEIDIAI_SRC_DIR}")
     else()
-        set(_deps_dir "${CMAKE_BINARY_DIR}/_deps")
+        # Anchor downloads to MNN's own binary dir. CMAKE_BINARY_DIR points at the
+        # top-level project's build tree, which is wrong (and pollutes the parent)
+        # when MNN is consumed as a subproject. CMAKE_CURRENT_BINARY_DIR follows the
+        # include() chain and always resolves to MNN's build directory.
+        set(_deps_dir "${CMAKE_CURRENT_BINARY_DIR}/_deps")
         file(MAKE_DIRECTORY "${_deps_dir}")
 
         set(_tar_path "${_deps_dir}/v${KLEIDIAI_COMMIT_SHA}.tar.gz")
@@ -73,8 +84,24 @@ function (download_kleidiai_and_collect_sources)
             CACHE PATH "Path to KleidiAI source (downloaded or provided)" FORCE)
     endif()
 
-    list(APPEND MNN_SOURCES_KLEIDIAI ${CMAKE_CURRENT_LIST_DIR}/mnn_kleidiai.cpp)
-    list(APPEND MNN_SOURCES_KLEIDIAI ${CMAKE_CURRENT_LIST_DIR}/mnn_kleidiai_util.cpp)
+    set(MNN_KLEIDIAI_DIR "${_MNN_KLEIDIAI_CMAKE_LIST_DIR}/../source/backend/cpu/kleidiai")
+    if(NOT EXISTS "${MNN_KLEIDIAI_DIR}/mnn_kleidiai.cpp")
+        # These sources live inside the MNN repo itself (committed alongside this
+        # file), so a correctly-resolved path always finds them. Reaching here means
+        # the MNN checkout is incomplete/corrupted, not an external dependency issue
+        # -- fail loudly instead of silently disabling a feature the user enabled.
+        message(FATAL_ERROR "KleidiAI MNN source files not found at ${MNN_KLEIDIAI_DIR}. "
+                            "Your MNN checkout looks incomplete; update it to a version that "
+                            "includes source/backend/cpu/kleidiai, or pass -DMNN_KLEIDIAI=OFF.")
+    endif()
+    list(APPEND MNN_SOURCES_KLEIDIAI ${MNN_KLEIDIAI_DIR}/mnn_kleidiai.cpp)
+    list(APPEND MNN_SOURCES_KLEIDIAI ${MNN_KLEIDIAI_DIR}/mnn_kleidiai_util.cpp)
+    list(APPEND MNN_SOURCES_KLEIDIAI ${MNN_KLEIDIAI_DIR}/KleidiAIConvolution.cpp)
+    list(APPEND MNN_SOURCES_KLEIDIAI ${MNN_KLEIDIAI_DIR}/KleidiAIConvolutionDepthwise.cpp)
+    list(APPEND MNN_SOURCES_KLEIDIAI ${MNN_KLEIDIAI_DIR}/KleidiAIConvInt8.cpp)
+    list(APPEND MNN_SOURCES_KLEIDIAI ${MNN_KLEIDIAI_DIR}/KleidiAIDenseConvolution.cpp)
+
+    include_directories(${MNN_KLEIDIAI_DIR})
 
     include_directories(
         ${KLEIDIAI_SRC_DIR}/

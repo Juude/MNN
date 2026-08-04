@@ -195,6 +195,7 @@ enum OpType : int {
     SplitGeLU = 303,
     GroupNorm = 304,
     LinearAttention = 305,
+    RoPE = 306,
 
     Extra = 512,
     // quantization
@@ -230,6 +231,12 @@ table StringVec {
 
 table AttentionParam {
     kv_cache: bool = true;
+    kv_shared_layer: string;
+    layer_index: int = -1;
+    kv_shared_layer_index: int = -1;
+    mhq_quant:[TensorQuantInfo]; // qk_scale_q, qk_scale_k, sv_scale_s, sv_scale_v
+    output_c4:bool = false;
+    attnScale: float = 0.0;
 }
 
 table LinearAttentionParam {
@@ -239,6 +246,15 @@ table LinearAttentionParam {
     head_k_dim: int;
     head_v_dim: int;
     use_qk_l2norm: bool;
+}
+
+table RoPEParam {
+    rope_cut_head_dim: int = 0;
+    num_head: int = 0;
+    kv_num_head: int = 0;
+    head_dim: int = 0;
+    q_norm: LayerNorm;
+    k_norm: LayerNorm;
 }
 
 table FmhaV2Param {
@@ -440,7 +456,8 @@ union OpParameter {
     AttentionParam,
     StftParam,
     LinearAttentionParam,
-    ShapeParam
+    ShapeParam,
+    RoPEParam
 }
 
 table Op {

@@ -30,6 +30,9 @@ struct AttentionParamT;
 struct LinearAttentionParam;
 struct LinearAttentionParamT;
 
+struct RoPEParam;
+struct RoPEParamT;
+
 struct FmhaV2Param;
 struct FmhaV2ParamT;
 
@@ -84,6 +87,8 @@ inline const flatbuffers::TypeTable *StringVecTypeTable();
 inline const flatbuffers::TypeTable *AttentionParamTypeTable();
 
 inline const flatbuffers::TypeTable *LinearAttentionParamTypeTable();
+
+inline const flatbuffers::TypeTable *RoPEParamTypeTable();
 
 inline const flatbuffers::TypeTable *FmhaV2ParamTypeTable();
 
@@ -289,6 +294,7 @@ enum OpType {
   OpType_SplitGeLU = 303,
   OpType_GroupNorm = 304,
   OpType_LinearAttention = 305,
+  OpType_RoPE = 306,
   OpType_Extra = 512,
   OpType_ConvInt8 = 513,
   OpType_Int8ToFloat = 514,
@@ -303,7 +309,7 @@ enum OpType {
   OpType_MAX = OpType_GridSample
 };
 
-inline const OpType (&EnumValuesOpType())[183] {
+inline const OpType (&EnumValuesOpType())[184] {
   static const OpType values[] = {
     OpType_AbsVal,
     OpType_QuantizedAdd,
@@ -478,6 +484,7 @@ inline const OpType (&EnumValuesOpType())[183] {
     OpType_SplitGeLU,
     OpType_GroupNorm,
     OpType_LinearAttention,
+    OpType_RoPE,
     OpType_Extra,
     OpType_ConvInt8,
     OpType_Int8ToFloat,
@@ -800,7 +807,7 @@ inline const char * const *EnumNamesOpType() {
     "SplitGeLU",
     "GroupNorm",
     "LinearAttention",
-    "",
+    "RoPE",
     "",
     "",
     "",
@@ -1213,11 +1220,12 @@ enum OpParameter {
   OpParameter_StftParam = 99,
   OpParameter_LinearAttentionParam = 100,
   OpParameter_ShapeParam = 101,
+  OpParameter_RoPEParam = 102,
   OpParameter_MIN = OpParameter_NONE,
-  OpParameter_MAX = OpParameter_ShapeParam
+  OpParameter_MAX = OpParameter_RoPEParam
 };
 
-inline const OpParameter (&EnumValuesOpParameter())[102] {
+inline const OpParameter (&EnumValuesOpParameter())[103] {
   static const OpParameter values[] = {
     OpParameter_NONE,
     OpParameter_QuantizedAdd,
@@ -1320,7 +1328,8 @@ inline const OpParameter (&EnumValuesOpParameter())[102] {
     OpParameter_AttentionParam,
     OpParameter_StftParam,
     OpParameter_LinearAttentionParam,
-    OpParameter_ShapeParam
+    OpParameter_ShapeParam,
+    OpParameter_RoPEParam
   };
   return values;
 }
@@ -1429,13 +1438,14 @@ inline const char * const *EnumNamesOpParameter() {
     "StftParam",
     "LinearAttentionParam",
     "ShapeParam",
+    "RoPEParam",
     nullptr
   };
   return names;
 }
 
 inline const char *EnumNameOpParameter(OpParameter e) {
-  if (e < OpParameter_NONE || e > OpParameter_LinearAttentionParam) return "";
+  if (e < OpParameter_NONE || e > OpParameter_RoPEParam) return "";
   const size_t index = static_cast<int>(e);
   return EnumNamesOpParameter()[index];
 }
@@ -1668,10 +1678,6 @@ template<> struct OpParameterTraits<Resize> {
   static const OpParameter enum_value = OpParameter_Resize;
 };
 
-template<> struct OpParameterTraits<ShapeParam> {
-  static const OpParameter enum_value = OpParameter_ShapeParam;
-};
-
 template<> struct OpParameterTraits<RoiParameters> {
   static const OpParameter enum_value = OpParameter_RoiParameters;
 };
@@ -1846,6 +1852,14 @@ template<> struct OpParameterTraits<StftParam> {
 
 template<> struct OpParameterTraits<LinearAttentionParam> {
   static const OpParameter enum_value = OpParameter_LinearAttentionParam;
+};
+
+template<> struct OpParameterTraits<ShapeParam> {
+  static const OpParameter enum_value = OpParameter_ShapeParam;
+};
+
+template<> struct OpParameterTraits<RoPEParam> {
+  static const OpParameter enum_value = OpParameter_RoPEParam;
 };
 
 struct OpParameterUnion {
@@ -2327,14 +2341,6 @@ struct OpParameterUnion {
     return type == OpParameter_Resize ?
       reinterpret_cast<const ResizeT *>(value) : nullptr;
   }
-  ShapeParamT *AsShapeParam() {
-    return type == OpParameter_ShapeParam ?
-      reinterpret_cast<ShapeParamT *>(value) : nullptr;
-  }
-  const ShapeParamT *AsShapeParam() const {
-    return type == OpParameter_ShapeParam ?
-      reinterpret_cast<const ShapeParamT *>(value) : nullptr;
-  }
   RoiParametersT *AsRoiParameters() {
     return type == OpParameter_RoiParameters ?
       reinterpret_cast<RoiParametersT *>(value) : nullptr;
@@ -2687,6 +2693,22 @@ struct OpParameterUnion {
     return type == OpParameter_LinearAttentionParam ?
       reinterpret_cast<const LinearAttentionParamT *>(value) : nullptr;
   }
+  ShapeParamT *AsShapeParam() {
+    return type == OpParameter_ShapeParam ?
+      reinterpret_cast<ShapeParamT *>(value) : nullptr;
+  }
+  const ShapeParamT *AsShapeParam() const {
+    return type == OpParameter_ShapeParam ?
+      reinterpret_cast<const ShapeParamT *>(value) : nullptr;
+  }
+  RoPEParamT *AsRoPEParam() {
+    return type == OpParameter_RoPEParam ?
+      reinterpret_cast<RoPEParamT *>(value) : nullptr;
+  }
+  const RoPEParamT *AsRoPEParam() const {
+    return type == OpParameter_RoPEParam ?
+      reinterpret_cast<const RoPEParamT *>(value) : nullptr;
+  }
 };
 
 bool VerifyOpParameter(flatbuffers::Verifier &verifier, const void *obj, OpParameter type);
@@ -2996,8 +3018,18 @@ flatbuffers::Offset<StringVec> CreateStringVec(flatbuffers::FlatBufferBuilder &_
 struct AttentionParamT : public flatbuffers::NativeTable {
   typedef AttentionParam TableType;
   bool kv_cache;
+  std::string kv_shared_layer;
+  int32_t layer_index;
+  int32_t kv_shared_layer_index;
+  std::vector<std::unique_ptr<TensorQuantInfoT>> mhq_quant;
+  bool output_c4;
+  float attnScale;
   AttentionParamT()
-      : kv_cache(true) {
+      : kv_cache(true),
+        layer_index(-1),
+        kv_shared_layer_index(-1),
+        output_c4(false),
+        attnScale(0.0f) {
   }
 };
 
@@ -3009,9 +3041,36 @@ struct AttentionParam FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
   bool kv_cache() const {
     return GetField<uint8_t>(4, 1) != 0;
   }
+  const flatbuffers::String *kv_shared_layer() const {
+    return GetPointer<const flatbuffers::String *>(6);
+  }
+  int32_t layer_index() const {
+    return GetField<int32_t>(8, -1);
+  }
+  int32_t kv_shared_layer_index() const {
+    return GetField<int32_t>(10, -1);
+  }
+  const flatbuffers::Vector<flatbuffers::Offset<TensorQuantInfo>> *mhq_quant() const {
+    return GetPointer<const flatbuffers::Vector<flatbuffers::Offset<TensorQuantInfo>> *>(12);
+  }
+  bool output_c4() const {
+    return GetField<uint8_t>(14, 0) != 0;
+  }
+  float attnScale() const {
+    return GetField<float>(16, 0.0f);
+  }
   bool Verify(flatbuffers::Verifier &verifier) const {
     return VerifyTableStart(verifier) &&
            VerifyField<uint8_t>(verifier, 4) &&
+           VerifyOffset(verifier, 6) &&
+           verifier.VerifyString(kv_shared_layer()) &&
+           VerifyField<int32_t>(verifier, 8) &&
+           VerifyField<int32_t>(verifier, 10) &&
+           VerifyOffset(verifier, 12) &&
+           verifier.VerifyVector(mhq_quant()) &&
+           verifier.VerifyVectorOfTables(mhq_quant()) &&
+           VerifyField<uint8_t>(verifier, 14) &&
+           VerifyField<float>(verifier, 16) &&
            verifier.EndTable();
   }
   AttentionParamT *UnPack(const flatbuffers::resolver_function_t *_resolver = nullptr) const;
@@ -3024,6 +3083,24 @@ struct AttentionParamBuilder {
   flatbuffers::uoffset_t start_;
   void add_kv_cache(bool kv_cache) {
     fbb_.AddElement<uint8_t>(4, static_cast<uint8_t>(kv_cache), 1);
+  }
+  void add_kv_shared_layer(flatbuffers::Offset<flatbuffers::String> kv_shared_layer) {
+    fbb_.AddOffset(6, kv_shared_layer);
+  }
+  void add_layer_index(int32_t layer_index) {
+    fbb_.AddElement<int32_t>(8, layer_index, -1);
+  }
+  void add_kv_shared_layer_index(int32_t kv_shared_layer_index) {
+    fbb_.AddElement<int32_t>(10, kv_shared_layer_index, -1);
+  }
+  void add_mhq_quant(flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<TensorQuantInfo>>> mhq_quant) {
+    fbb_.AddOffset(12, mhq_quant);
+  }
+  void add_output_c4(bool output_c4) {
+    fbb_.AddElement<uint8_t>(14, static_cast<uint8_t>(output_c4), 0);
+  }
+  void add_attnScale(float attnScale) {
+    fbb_.AddElement<float>(16, attnScale, 0.0f);
   }
   explicit AttentionParamBuilder(flatbuffers::FlatBufferBuilder &_fbb)
         : fbb_(_fbb) {
@@ -3039,8 +3116,20 @@ struct AttentionParamBuilder {
 
 inline flatbuffers::Offset<AttentionParam> CreateAttentionParam(
     flatbuffers::FlatBufferBuilder &_fbb,
-    bool kv_cache = true) {
+    bool kv_cache = true,
+    flatbuffers::Offset<flatbuffers::String> kv_shared_layer = 0,
+    int32_t layer_index = -1,
+    int32_t kv_shared_layer_index = -1,
+    flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<TensorQuantInfo>>> mhq_quant = 0,
+    bool output_c4 = false,
+    float attnScale = 0.0f) {
   AttentionParamBuilder builder_(_fbb);
+  builder_.add_attnScale(attnScale);
+  builder_.add_mhq_quant(mhq_quant);
+  builder_.add_kv_shared_layer_index(kv_shared_layer_index);
+  builder_.add_layer_index(layer_index);
+  builder_.add_kv_shared_layer(kv_shared_layer);
+  builder_.add_output_c4(output_c4);
   builder_.add_kv_cache(kv_cache);
   return builder_.Finish();
 }
@@ -3155,6 +3244,115 @@ inline flatbuffers::Offset<LinearAttentionParam> CreateLinearAttentionParam(
 }
 
 flatbuffers::Offset<LinearAttentionParam> CreateLinearAttentionParam(flatbuffers::FlatBufferBuilder &_fbb, const LinearAttentionParamT *_o, const flatbuffers::rehasher_function_t *_rehasher = nullptr);
+
+struct RoPEParamT : public flatbuffers::NativeTable {
+  typedef RoPEParam TableType;
+  int32_t rope_cut_head_dim;
+  int32_t num_head;
+  int32_t kv_num_head;
+  int32_t head_dim;
+  std::unique_ptr<LayerNormT> q_norm;
+  std::unique_ptr<LayerNormT> k_norm;
+  RoPEParamT()
+      : rope_cut_head_dim(0),
+        num_head(0),
+        kv_num_head(0),
+        head_dim(0) {
+  }
+};
+
+struct RoPEParam FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
+  typedef RoPEParamT NativeTableType;
+  static const flatbuffers::TypeTable *MiniReflectTypeTable() {
+    return RoPEParamTypeTable();
+  }
+  int32_t rope_cut_head_dim() const {
+    return GetField<int32_t>(4, 0);
+  }
+  int32_t num_head() const {
+    return GetField<int32_t>(6, 0);
+  }
+  int32_t kv_num_head() const {
+    return GetField<int32_t>(8, 0);
+  }
+  int32_t head_dim() const {
+    return GetField<int32_t>(10, 0);
+  }
+  const LayerNorm *q_norm() const {
+    return GetPointer<const LayerNorm *>(12);
+  }
+  const LayerNorm *k_norm() const {
+    return GetPointer<const LayerNorm *>(14);
+  }
+  bool Verify(flatbuffers::Verifier &verifier) const {
+    return VerifyTableStart(verifier) &&
+           VerifyField<int32_t>(verifier, 4) &&
+           VerifyField<int32_t>(verifier, 6) &&
+           VerifyField<int32_t>(verifier, 8) &&
+           VerifyField<int32_t>(verifier, 10) &&
+           VerifyOffset(verifier, 12) &&
+           verifier.VerifyTable(q_norm()) &&
+           VerifyOffset(verifier, 14) &&
+           verifier.VerifyTable(k_norm()) &&
+           verifier.EndTable();
+  }
+  RoPEParamT *UnPack(const flatbuffers::resolver_function_t *_resolver = nullptr) const;
+  void UnPackTo(RoPEParamT *_o, const flatbuffers::resolver_function_t *_resolver = nullptr) const;
+  static flatbuffers::Offset<RoPEParam> Pack(flatbuffers::FlatBufferBuilder &_fbb, const RoPEParamT* _o, const flatbuffers::rehasher_function_t *_rehasher = nullptr);
+};
+
+struct RoPEParamBuilder {
+  flatbuffers::FlatBufferBuilder &fbb_;
+  flatbuffers::uoffset_t start_;
+  void add_rope_cut_head_dim(int32_t rope_cut_head_dim) {
+    fbb_.AddElement<int32_t>(4, rope_cut_head_dim, 0);
+  }
+  void add_num_head(int32_t num_head) {
+    fbb_.AddElement<int32_t>(6, num_head, 0);
+  }
+  void add_kv_num_head(int32_t kv_num_head) {
+    fbb_.AddElement<int32_t>(8, kv_num_head, 0);
+  }
+  void add_head_dim(int32_t head_dim) {
+    fbb_.AddElement<int32_t>(10, head_dim, 0);
+  }
+  void add_q_norm(flatbuffers::Offset<LayerNorm> q_norm) {
+    fbb_.AddOffset(12, q_norm);
+  }
+  void add_k_norm(flatbuffers::Offset<LayerNorm> k_norm) {
+    fbb_.AddOffset(14, k_norm);
+  }
+  explicit RoPEParamBuilder(flatbuffers::FlatBufferBuilder &_fbb)
+        : fbb_(_fbb) {
+    start_ = fbb_.StartTable();
+  }
+  RoPEParamBuilder &operator=(const RoPEParamBuilder &);
+  flatbuffers::Offset<RoPEParam> Finish() {
+    const auto end = fbb_.EndTable(start_);
+    auto o = flatbuffers::Offset<RoPEParam>(end);
+    return o;
+  }
+};
+
+inline flatbuffers::Offset<RoPEParam> CreateRoPEParam(
+    flatbuffers::FlatBufferBuilder &_fbb,
+    int32_t rope_cut_head_dim = 0,
+    int32_t num_head = 0,
+    int32_t kv_num_head = 0,
+    int32_t head_dim = 0,
+    flatbuffers::Offset<LayerNorm> q_norm = 0,
+    flatbuffers::Offset<LayerNorm> k_norm = 0) {
+  RoPEParamBuilder builder_(_fbb);
+  builder_.add_k_norm(k_norm);
+  builder_.add_q_norm(q_norm);
+  builder_.add_head_dim(head_dim);
+  builder_.add_kv_num_head(kv_num_head);
+  builder_.add_num_head(num_head);
+  builder_.add_rope_cut_head_dim(rope_cut_head_dim);
+  return builder_.Finish();
+}
+
+flatbuffers::Offset<RoPEParam> CreateRoPEParam(flatbuffers::FlatBufferBuilder &_fbb, const RoPEParamT *_o, const flatbuffers::rehasher_function_t *_rehasher = nullptr);
 
 struct FmhaV2ParamT : public flatbuffers::NativeTable {
   typedef FmhaV2Param TableType;
@@ -4080,9 +4278,6 @@ struct Op FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
   const Resize *main_as_Resize() const {
     return main_type() == OpParameter_Resize ? static_cast<const Resize *>(main()) : nullptr;
   }
-  const ShapeParam *main_as_ShapeParam() const {
-    return main_type() == OpParameter_ShapeParam ? static_cast<const ShapeParam *>(main()) : nullptr;
-  }
   const RoiParameters *main_as_RoiParameters() const {
     return main_type() == OpParameter_RoiParameters ? static_cast<const RoiParameters *>(main()) : nullptr;
   }
@@ -4214,6 +4409,12 @@ struct Op FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
   }
   const LinearAttentionParam *main_as_LinearAttentionParam() const {
     return main_type() == OpParameter_LinearAttentionParam ? static_cast<const LinearAttentionParam *>(main()) : nullptr;
+  }
+  const ShapeParam *main_as_ShapeParam() const {
+    return main_type() == OpParameter_ShapeParam ? static_cast<const ShapeParam *>(main()) : nullptr;
+  }
+  const RoPEParam *main_as_RoPEParam() const {
+    return main_type() == OpParameter_RoPEParam ? static_cast<const RoPEParam *>(main()) : nullptr;
   }
   const flatbuffers::String *name() const {
     return GetPointer<const flatbuffers::String *>(10);
@@ -4476,10 +4677,6 @@ template<> inline const Resize *Op::main_as<Resize>() const {
   return main_as_Resize();
 }
 
-template<> inline const ShapeParam *Op::main_as<ShapeParam>() const {
-  return main_as_ShapeParam();
-}
-
 template<> inline const RoiParameters *Op::main_as<RoiParameters>() const {
   return main_as_RoiParameters();
 }
@@ -4654,6 +4851,14 @@ template<> inline const StftParam *Op::main_as<StftParam>() const {
 
 template<> inline const LinearAttentionParam *Op::main_as<LinearAttentionParam>() const {
   return main_as_LinearAttentionParam();
+}
+
+template<> inline const ShapeParam *Op::main_as<ShapeParam>() const {
+  return main_as_ShapeParam();
+}
+
+template<> inline const RoPEParam *Op::main_as<RoPEParam>() const {
+  return main_as_RoPEParam();
 }
 
 struct OpBuilder {
@@ -5463,6 +5668,12 @@ inline void AttentionParam::UnPackTo(AttentionParamT *_o, const flatbuffers::res
   (void)_o;
   (void)_resolver;
   { auto _e = kv_cache(); _o->kv_cache = _e; };
+  { auto _e = kv_shared_layer(); if (_e) _o->kv_shared_layer = _e->str(); };
+  { auto _e = layer_index(); _o->layer_index = _e; };
+  { auto _e = kv_shared_layer_index(); _o->kv_shared_layer_index = _e; };
+  { auto _e = mhq_quant(); if (_e) { _o->mhq_quant.resize(_e->size()); for (flatbuffers::uoffset_t _i = 0; _i < _e->size(); _i++) { _o->mhq_quant[_i] = std::unique_ptr<TensorQuantInfoT>(_e->Get(_i)->UnPack(_resolver)); } } };
+  { auto _e = output_c4(); _o->output_c4 = _e; };
+  { auto _e = attnScale(); _o->attnScale = _e; };
 }
 
 inline flatbuffers::Offset<AttentionParam> AttentionParam::Pack(flatbuffers::FlatBufferBuilder &_fbb, const AttentionParamT* _o, const flatbuffers::rehasher_function_t *_rehasher) {
@@ -5474,9 +5685,21 @@ inline flatbuffers::Offset<AttentionParam> CreateAttentionParam(flatbuffers::Fla
   (void)_o;
   struct _VectorArgs { flatbuffers::FlatBufferBuilder *__fbb; const AttentionParamT* __o; const flatbuffers::rehasher_function_t *__rehasher; } _va = { &_fbb, _o, _rehasher}; (void)_va;
   auto _kv_cache = _o->kv_cache;
+  auto _kv_shared_layer = _o->kv_shared_layer.empty() ? 0 : _fbb.CreateString(_o->kv_shared_layer);
+  auto _layer_index = _o->layer_index;
+  auto _kv_shared_layer_index = _o->kv_shared_layer_index;
+  auto _mhq_quant = _o->mhq_quant.size() ? _fbb.CreateVector<flatbuffers::Offset<TensorQuantInfo>> (_o->mhq_quant.size(), [](size_t i, _VectorArgs *__va) { return CreateTensorQuantInfo(*__va->__fbb, __va->__o->mhq_quant[i].get(), __va->__rehasher); }, &_va ) : 0;
+  auto _output_c4 = _o->output_c4;
+  auto _attnScale = _o->attnScale;
   return MNN::CreateAttentionParam(
       _fbb,
-      _kv_cache);
+      _kv_cache,
+      _kv_shared_layer,
+      _layer_index,
+      _kv_shared_layer_index,
+      _mhq_quant,
+      _output_c4,
+      _attnScale);
 }
 
 inline LinearAttentionParamT *LinearAttentionParam::UnPack(const flatbuffers::resolver_function_t *_resolver) const {
@@ -5518,6 +5741,47 @@ inline flatbuffers::Offset<LinearAttentionParam> CreateLinearAttentionParam(flat
       _head_k_dim,
       _head_v_dim,
       _use_qk_l2norm);
+}
+
+inline RoPEParamT *RoPEParam::UnPack(const flatbuffers::resolver_function_t *_resolver) const {
+  auto _o = new RoPEParamT();
+  UnPackTo(_o, _resolver);
+  return _o;
+}
+
+inline void RoPEParam::UnPackTo(RoPEParamT *_o, const flatbuffers::resolver_function_t *_resolver) const {
+  (void)_o;
+  (void)_resolver;
+  { auto _e = rope_cut_head_dim(); _o->rope_cut_head_dim = _e; };
+  { auto _e = num_head(); _o->num_head = _e; };
+  { auto _e = kv_num_head(); _o->kv_num_head = _e; };
+  { auto _e = head_dim(); _o->head_dim = _e; };
+  { auto _e = q_norm(); if (_e) _o->q_norm = std::unique_ptr<LayerNormT>(_e->UnPack(_resolver)); };
+  { auto _e = k_norm(); if (_e) _o->k_norm = std::unique_ptr<LayerNormT>(_e->UnPack(_resolver)); };
+}
+
+inline flatbuffers::Offset<RoPEParam> RoPEParam::Pack(flatbuffers::FlatBufferBuilder &_fbb, const RoPEParamT* _o, const flatbuffers::rehasher_function_t *_rehasher) {
+  return CreateRoPEParam(_fbb, _o, _rehasher);
+}
+
+inline flatbuffers::Offset<RoPEParam> CreateRoPEParam(flatbuffers::FlatBufferBuilder &_fbb, const RoPEParamT *_o, const flatbuffers::rehasher_function_t *_rehasher) {
+  (void)_rehasher;
+  (void)_o;
+  struct _VectorArgs { flatbuffers::FlatBufferBuilder *__fbb; const RoPEParamT* __o; const flatbuffers::rehasher_function_t *__rehasher; } _va = { &_fbb, _o, _rehasher}; (void)_va;
+  auto _rope_cut_head_dim = _o->rope_cut_head_dim;
+  auto _num_head = _o->num_head;
+  auto _kv_num_head = _o->kv_num_head;
+  auto _head_dim = _o->head_dim;
+  auto _q_norm = _o->q_norm ? CreateLayerNorm(_fbb, _o->q_norm.get(), _rehasher) : 0;
+  auto _k_norm = _o->k_norm ? CreateLayerNorm(_fbb, _o->k_norm.get(), _rehasher) : 0;
+  return MNN::CreateRoPEParam(
+      _fbb,
+      _rope_cut_head_dim,
+      _num_head,
+      _kv_num_head,
+      _head_dim,
+      _q_norm,
+      _k_norm);
 }
 
 inline FmhaV2ParamT *FmhaV2Param::UnPack(const flatbuffers::resolver_function_t *_resolver) const {
@@ -6319,10 +6583,6 @@ inline bool VerifyOpParameter(flatbuffers::Verifier &verifier, const void *obj, 
       auto ptr = reinterpret_cast<const Resize *>(obj);
       return verifier.VerifyTable(ptr);
     }
-    case OpParameter_ShapeParam: {
-      auto ptr = reinterpret_cast<const ShapeParam *>(obj);
-      return verifier.VerifyTable(ptr);
-    }
     case OpParameter_RoiParameters: {
       auto ptr = reinterpret_cast<const RoiParameters *>(obj);
       return verifier.VerifyTable(ptr);
@@ -6497,6 +6757,14 @@ inline bool VerifyOpParameter(flatbuffers::Verifier &verifier, const void *obj, 
     }
     case OpParameter_LinearAttentionParam: {
       auto ptr = reinterpret_cast<const LinearAttentionParam *>(obj);
+      return verifier.VerifyTable(ptr);
+    }
+    case OpParameter_ShapeParam: {
+      auto ptr = reinterpret_cast<const ShapeParam *>(obj);
+      return verifier.VerifyTable(ptr);
+    }
+    case OpParameter_RoPEParam: {
+      auto ptr = reinterpret_cast<const RoPEParam *>(obj);
       return verifier.VerifyTable(ptr);
     }
     default: return false;
@@ -6741,10 +7009,6 @@ inline void *OpParameterUnion::UnPack(const void *obj, OpParameter type, const f
       auto ptr = reinterpret_cast<const Resize *>(obj);
       return ptr->UnPack(resolver);
     }
-    case OpParameter_ShapeParam: {
-      auto ptr = reinterpret_cast<const ShapeParam *>(obj);
-      return ptr->UnPack(resolver);
-    }
     case OpParameter_RoiParameters: {
       auto ptr = reinterpret_cast<const RoiParameters *>(obj);
       return ptr->UnPack(resolver);
@@ -6919,6 +7183,14 @@ inline void *OpParameterUnion::UnPack(const void *obj, OpParameter type, const f
     }
     case OpParameter_LinearAttentionParam: {
       auto ptr = reinterpret_cast<const LinearAttentionParam *>(obj);
+      return ptr->UnPack(resolver);
+    }
+    case OpParameter_ShapeParam: {
+      auto ptr = reinterpret_cast<const ShapeParam *>(obj);
+      return ptr->UnPack(resolver);
+    }
+    case OpParameter_RoPEParam: {
+      auto ptr = reinterpret_cast<const RoPEParam *>(obj);
       return ptr->UnPack(resolver);
     }
     default: return nullptr;
@@ -7151,10 +7423,6 @@ inline flatbuffers::Offset<void> OpParameterUnion::Pack(flatbuffers::FlatBufferB
       auto ptr = reinterpret_cast<const ResizeT *>(value);
       return CreateResize(_fbb, ptr, _rehasher).Union();
     }
-    case OpParameter_ShapeParam: {
-      auto ptr = reinterpret_cast<const ShapeParamT *>(value);
-      return CreateShapeParam(_fbb, ptr, _rehasher).Union();
-    }
     case OpParameter_RoiParameters: {
       auto ptr = reinterpret_cast<const RoiParametersT *>(value);
       return CreateRoiParameters(_fbb, ptr, _rehasher).Union();
@@ -7330,6 +7598,14 @@ inline flatbuffers::Offset<void> OpParameterUnion::Pack(flatbuffers::FlatBufferB
     case OpParameter_LinearAttentionParam: {
       auto ptr = reinterpret_cast<const LinearAttentionParamT *>(value);
       return CreateLinearAttentionParam(_fbb, ptr, _rehasher).Union();
+    }
+    case OpParameter_ShapeParam: {
+      auto ptr = reinterpret_cast<const ShapeParamT *>(value);
+      return CreateShapeParam(_fbb, ptr, _rehasher).Union();
+    }
+    case OpParameter_RoPEParam: {
+      auto ptr = reinterpret_cast<const RoPEParamT *>(value);
+      return CreateRoPEParam(_fbb, ptr, _rehasher).Union();
     }
     default: return 0;
   }
@@ -7561,10 +7837,6 @@ inline OpParameterUnion::OpParameterUnion(const OpParameterUnion &u) FLATBUFFERS
       value = new ResizeT(*reinterpret_cast<ResizeT *>(u.value));
       break;
     }
-    case OpParameter_ShapeParam: {
-      value = new ShapeParamT(*reinterpret_cast<ShapeParamT *>(u.value));
-      break;
-    }
     case OpParameter_RoiParameters: {
       value = new RoiParametersT(*reinterpret_cast<RoiParametersT *>(u.value));
       break;
@@ -7730,7 +8002,7 @@ inline OpParameterUnion::OpParameterUnion(const OpParameterUnion &u) FLATBUFFERS
       break;
     }
     case OpParameter_AttentionParam: {
-      value = new AttentionParamT(*reinterpret_cast<AttentionParamT *>(u.value));
+      FLATBUFFERS_ASSERT(false);  // AttentionParamT not copyable.
       break;
     }
     case OpParameter_StftParam: {
@@ -7739,6 +8011,14 @@ inline OpParameterUnion::OpParameterUnion(const OpParameterUnion &u) FLATBUFFERS
     }
     case OpParameter_LinearAttentionParam: {
       value = new LinearAttentionParamT(*reinterpret_cast<LinearAttentionParamT *>(u.value));
+      break;
+    }
+    case OpParameter_ShapeParam: {
+      value = new ShapeParamT(*reinterpret_cast<ShapeParamT *>(u.value));
+      break;
+    }
+    case OpParameter_RoPEParam: {
+      FLATBUFFERS_ASSERT(false);  // RoPEParamT not copyable.
       break;
     }
     default:
@@ -8028,11 +8308,6 @@ inline void OpParameterUnion::Reset() {
       delete ptr;
       break;
     }
-    case OpParameter_ShapeParam: {
-      auto ptr = reinterpret_cast<ShapeParamT *>(value);
-      delete ptr;
-      break;
-    }
     case OpParameter_RoiParameters: {
       auto ptr = reinterpret_cast<RoiParametersT *>(value);
       delete ptr;
@@ -8253,6 +8528,16 @@ inline void OpParameterUnion::Reset() {
       delete ptr;
       break;
     }
+    case OpParameter_ShapeParam: {
+      auto ptr = reinterpret_cast<ShapeParamT *>(value);
+      delete ptr;
+      break;
+    }
+    case OpParameter_RoPEParam: {
+      auto ptr = reinterpret_cast<RoPEParamT *>(value);
+      delete ptr;
+      break;
+    }
     default: break;
   }
   value = nullptr;
@@ -8443,12 +8728,13 @@ inline const flatbuffers::TypeTable *OpTypeTypeTable() {
     { flatbuffers::ET_INT, 0, 0 },
     { flatbuffers::ET_INT, 0, 0 },
     { flatbuffers::ET_INT, 0, 0 },
+    { flatbuffers::ET_INT, 0, 0 },
     { flatbuffers::ET_INT, 0, 0 }
   };
   static const flatbuffers::TypeFunction type_refs[] = {
     OpTypeTypeTable
   };
-  static const int64_t values[] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 256, 257, 258, 259, 260, 261, 262, 263, 264, 265, 266, 267, 268, 269, 299, 300, 301, 302, 303, 304, 305, 512, 513, 514, 515, 517, 518, 600, 601, 603, 604 };
+  static const int64_t values[] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 256, 257, 258, 259, 260, 261, 262, 263, 264, 265, 266, 267, 268, 269, 299, 300, 301, 302, 303, 304, 305, 306, 512, 513, 514, 515, 517, 518, 600, 601, 603, 604 };
   static const char * const names[] = {
     "AbsVal",
     "QuantizedAdd",
@@ -8623,6 +8909,7 @@ inline const flatbuffers::TypeTable *OpTypeTypeTable() {
     "SplitGeLU",
     "GroupNorm",
     "LinearAttention",
+    "RoPE",
     "Extra",
     "ConvInt8",
     "Int8ToFloat",
@@ -8635,7 +8922,7 @@ inline const flatbuffers::TypeTable *OpTypeTypeTable() {
     "GridSample"
   };
   static const flatbuffers::TypeTable tt = {
-    flatbuffers::ST_ENUM, 183, type_codes, type_refs, values, names
+    flatbuffers::ST_ENUM, 184, type_codes, type_refs, values, names
   };
   return &tt;
 }
@@ -8743,7 +9030,8 @@ inline const flatbuffers::TypeTable *OpParameterTypeTable() {
     { flatbuffers::ET_SEQUENCE, 0, 97 },
     { flatbuffers::ET_SEQUENCE, 0, 98 },
     { flatbuffers::ET_SEQUENCE, 0, 99 },
-    { flatbuffers::ET_SEQUENCE, 0, 100 }
+    { flatbuffers::ET_SEQUENCE, 0, 100 },
+    { flatbuffers::ET_SEQUENCE, 0, 101 }
   };
   static const flatbuffers::TypeFunction type_refs[] = {
     QuantizedAddTypeTable,
@@ -8846,7 +9134,8 @@ inline const flatbuffers::TypeTable *OpParameterTypeTable() {
     AttentionParamTypeTable,
     StftParamTypeTable,
     LinearAttentionParamTypeTable,
-    ShapeParamTypeTable
+    ShapeParamTypeTable,
+    RoPEParamTypeTable
   };
   static const char * const names[] = {
     "NONE",
@@ -8950,10 +9239,11 @@ inline const flatbuffers::TypeTable *OpParameterTypeTable() {
     "AttentionParam",
     "StftParam",
     "LinearAttentionParam",
-    "ShapeParam"
+    "ShapeParam",
+    "RoPEParam"
   };
   static const flatbuffers::TypeTable tt = {
-    flatbuffers::ST_UNION, 102, type_codes, type_refs, nullptr, names
+    flatbuffers::ST_UNION, 103, type_codes, type_refs, nullptr, names
   };
   return &tt;
 }
@@ -9065,13 +9355,28 @@ inline const flatbuffers::TypeTable *StringVecTypeTable() {
 
 inline const flatbuffers::TypeTable *AttentionParamTypeTable() {
   static const flatbuffers::TypeCode type_codes[] = {
-    { flatbuffers::ET_BOOL, 0, -1 }
+    { flatbuffers::ET_BOOL, 0, -1 },
+    { flatbuffers::ET_STRING, 0, -1 },
+    { flatbuffers::ET_INT, 0, -1 },
+    { flatbuffers::ET_INT, 0, -1 },
+    { flatbuffers::ET_SEQUENCE, 1, 0 },
+    { flatbuffers::ET_BOOL, 0, -1 },
+    { flatbuffers::ET_FLOAT, 0, -1 }
+  };
+  static const flatbuffers::TypeFunction type_refs[] = {
+    TensorQuantInfoTypeTable
   };
   static const char * const names[] = {
-    "kv_cache"
+    "kv_cache",
+    "kv_shared_layer",
+    "layer_index",
+    "kv_shared_layer_index",
+    "mhq_quant",
+    "output_c4",
+    "attnScale"
   };
   static const flatbuffers::TypeTable tt = {
-    flatbuffers::ST_TABLE, 1, type_codes, nullptr, nullptr, names
+    flatbuffers::ST_TABLE, 7, type_codes, type_refs, nullptr, names
   };
   return &tt;
 }
@@ -9095,6 +9400,32 @@ inline const flatbuffers::TypeTable *LinearAttentionParamTypeTable() {
   };
   static const flatbuffers::TypeTable tt = {
     flatbuffers::ST_TABLE, 6, type_codes, nullptr, nullptr, names
+  };
+  return &tt;
+}
+
+inline const flatbuffers::TypeTable *RoPEParamTypeTable() {
+  static const flatbuffers::TypeCode type_codes[] = {
+    { flatbuffers::ET_INT, 0, -1 },
+    { flatbuffers::ET_INT, 0, -1 },
+    { flatbuffers::ET_INT, 0, -1 },
+    { flatbuffers::ET_INT, 0, -1 },
+    { flatbuffers::ET_SEQUENCE, 0, 0 },
+    { flatbuffers::ET_SEQUENCE, 0, 0 }
+  };
+  static const flatbuffers::TypeFunction type_refs[] = {
+    LayerNormTypeTable
+  };
+  static const char * const names[] = {
+    "rope_cut_head_dim",
+    "num_head",
+    "kv_num_head",
+    "head_dim",
+    "q_norm",
+    "k_norm"
+  };
+  static const flatbuffers::TypeTable tt = {
+    flatbuffers::ST_TABLE, 6, type_codes, type_refs, nullptr, names
   };
   return &tt;
 }

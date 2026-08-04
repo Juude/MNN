@@ -32,6 +32,7 @@ data class ModelConfig(
     @SerializedName("use_mmap") var useMmap: Boolean?,
     @SerializedName("memory") var memory: String?,
     @SerializedName("system_prompt") var systemPrompt: String?,
+    @SerializedName("prompt_cache") var promptCache: Boolean?,
     @SerializedName("sampler_type") var samplerType: String?,
     @SerializedName("mixed_samplers") var mixedSamplers: MutableList<String>?,
     @SerializedName("temperature") var temperature: Float?,
@@ -65,6 +66,7 @@ data class ModelConfig(
             precision = this.precision,
             memory = this.memory,
             systemPrompt = this.systemPrompt,
+            promptCache = this.promptCache,
             samplerType = this.samplerType,
             mixedSamplers = this.mixedSamplers?.toMutableList(),
             temperature = this.temperature,
@@ -238,6 +240,17 @@ data class ModelConfig(
             return getModelConfigDir(modelId) + "/custom_config.json"
         }
 
+        /** Delete custom_config.json so next load uses base config.json only (restores defaults). */
+        fun deleteExtraConfig(modelId: String): Boolean {
+            return try {
+                val file = File(getExtraConfigFile(modelId))
+                file.exists() && file.delete()
+            } catch (e: Exception) {
+                Log.e(TAG, "deleteExtraConfig error", e)
+                false
+            }
+        }
+
         fun getMarketConfigFile(modelId: String):String {
             if (modelId.startsWith("local/")) {
                 val localPath = modelId.removePrefix("local/")
@@ -261,13 +274,14 @@ data class ModelConfig(
         }
 
         val defaultConfig:ModelConfig = ModelConfig (
-            llmModel = "",
-            llmWeight = "",
+            llmModel = null,
+            llmWeight = null,
             backendType = null,
             threadNum = 4,
             precision = "low",
             memory = "",
             systemPrompt = "You are a helpful assistant.",
+            promptCache = false,
             samplerType = "",
             mixedSamplers = mutableListOf("topK", "topP", "minP", "temperature"),
             temperature = 0.6f,

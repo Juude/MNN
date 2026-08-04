@@ -62,13 +62,13 @@ class SettingsBottomSheetFragment : BaseSettingsBottomSheetFragment() {
 
     override fun loadSettings() {
         super.loadSettings()
+        refreshUIFromConfig()
+    }
+
+    override fun refreshUIFromConfig() {
         updateSamplerSettings()
-        
-        // Max tokens
         currentConfig.maxNewTokens = currentConfig.maxNewTokens ?: defaultConfig.maxNewTokens
         binding.editMaxNewTokens.setText(currentConfig.maxNewTokens.toString())
-
-        // System prompt
         currentConfig.systemPrompt = currentConfig.systemPrompt ?: defaultConfig.systemPrompt
         binding.editTextSystemPrompt.setText(currentConfig.systemPrompt)
     }
@@ -106,6 +106,12 @@ class SettingsBottomSheetFragment : BaseSettingsBottomSheetFragment() {
         binding.mmapSettingsItem.setOnCheckedChangeListener { _, isChecked ->
             currentConfig.useMmap = isChecked
         }
+        // Prompt cache toggle
+        binding.promptCacheToggle.isChecked = currentConfig.promptCache ?: false
+        binding.promptCacheToggle.setOnCheckedChangeListener { _, isChecked ->
+            currentConfig.promptCache = isChecked
+        }
+
         binding.buttonClearMmapCache.setOnClickListener {
             val success = MmapUtils.clearMmapCache(modelId)
             if (success) {
@@ -542,6 +548,11 @@ class SettingsBottomSheetFragment : BaseSettingsBottomSheetFragment() {
             needSaveConfig = true
             chatSession?.updateSystemPrompt(currentConfig.systemPrompt!!)
             needRecreate = false
+        } else if (currentConfig.promptCache != loadedConfig.promptCache) {
+            needSaveConfig = true
+            val llmSession = chatSession as? com.alibaba.mnnllm.android.llm.LlmSession
+            llmSession?.updateConfig("""{"prompt_cache": ${currentConfig.promptCache ?: false}}""")
+            needRecreate = false
         } else if (currentConfig.useMmap != loadedConfig.useMmap) {
             needSaveConfig = true
             needRecreate = true
@@ -563,7 +574,17 @@ class SettingsBottomSheetFragment : BaseSettingsBottomSheetFragment() {
 
     override fun onAfterSettingsReset() {
         super.onAfterSettingsReset()
+        currentConfig.systemPrompt = currentConfig.systemPrompt ?: defaultConfig.systemPrompt
+        binding.editTextSystemPrompt.setText(currentConfig.systemPrompt)
+        currentConfig.maxNewTokens = currentConfig.maxNewTokens ?: defaultConfig.maxNewTokens
+        binding.editMaxNewTokens.setText(currentConfig.maxNewTokens.toString())
+        updateSamplerSettings()
         updateSamplerSettingsVisibility()
+        chatSession?.updateSystemPrompt(currentConfig.systemPrompt ?: defaultConfig.systemPrompt ?: "")
+        chatSession?.updateMaxNewTokens(currentConfig.maxNewTokens ?: defaultConfig.maxNewTokens ?: 2048)
+        binding.promptCacheToggle.isChecked = currentConfig.promptCache ?: false
+        val llmSession = chatSession as? com.alibaba.mnnllm.android.llm.LlmSession
+        llmSession?.updateConfig("""{"prompt_cache": ${currentConfig.promptCache ?: false}}""")
     }
 
     override fun onDestroyView() {
