@@ -418,9 +418,12 @@ std::vector<ModelMarketItem> ModelRepository::SearchModels(const std::string& ke
     std::vector<ModelMarketItem> searchResults;
     
     if (keyword.empty()) {
-        LOG_DEBUG_TAG("Search keyword is empty, returning all LLM models", kTag);
-        // Return all LLM models filtered by current source
-        return ProcessModels(GetModels());
+        LOG_DEBUG_TAG("Search keyword is empty, returning all models", kTag);
+        // Both getters already filter by the current source
+        auto allModels = GetModels();
+        auto ttsModels = GetTtsModels();
+        allModels.insert(allModels.end(), ttsModels.begin(), ttsModels.end());
+        return allModels;
     }
     
     try {
@@ -456,8 +459,10 @@ std::vector<ModelMarketItem> ModelRepository::SearchModels(const std::string& ke
             return false;
         };
         
-        // Search only in LLM models (not TTS or ASR)
-        for (const auto& model : data->models) {
+        // Search across LLM and TTS models (ASR is not searched yet)
+        auto searchableModels = data->models;
+        searchableModels.insert(searchableModels.end(), data->ttsModels.begin(), data->ttsModels.end());
+        for (const auto& model : searchableModels) {
             // First check if model supports current source
             if (!supportsCurrentSource(model)) {
                 LOG_DEBUG_TAG("Model '" + model.modelName + "' does not support current source '" + current_download_provider_ + "', skipping", kTag);
