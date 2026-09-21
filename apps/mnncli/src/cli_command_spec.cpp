@@ -96,6 +96,20 @@ namespace {
         0, 0,  // No positional args
         "Display MNN CLI system information"
     };
+
+    CommandSpec tts_spec = {
+        "tts",
+        {
+            {"text",      't', ArgKind::Value, true,  "Text to synthesize"},
+            {"output",    'o', ArgKind::Value, false, "Output wav path (default: ./tts_output.wav)"},
+            {"speaker",   's', ArgKind::Value, false, "Speaker id (supertonic: M1/M2/F1/F2)"},
+            {"speed",     'S', ArgKind::Value, false, "Speech speed (supertonic, default: 1.0)"},
+            {"steps",     'n', ArgKind::Value, false, "Iteration steps (supertonic, default: 10)"},
+            {"precision", 'p', ArgKind::Value, false, "Model precision (supertonic: fp16/fp32)"}
+        },
+        1, 1,  // Exactly 1 positional arg (model name or model directory)
+        "Synthesize speech from text (TTS)"
+    };
 }
 
 const CommandSpec& GetSpec(const std::string& command) {
@@ -109,6 +123,7 @@ const CommandSpec& GetSpec(const std::string& command) {
     if (command == "benchmark") return benchmark_spec;
     if (command == "config") return config_spec;
     if (command == "info") return info_spec;
+    if (command == "tts") return tts_spec;
     static CommandSpec empty_spec = {};
     return empty_spec;
 }
