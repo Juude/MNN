@@ -62,7 +62,7 @@ jobs:
           set -euo pipefail
           git clone --depth 1 https://github.com/bilibili/libyuv.git 3rd_party/libyuv
 
-      - name: Stage 1 - build MNN (LLM, shared) for Android
+      - name: Stage 1 - build MNN (LLM, static) for Android
         run: |
           set -euo pipefail
           NDK="${{ steps.ndk.outputs.ndk }}"
@@ -105,6 +105,10 @@ jobs:
             -DMNN_SOURCE_DIR="$GITHUB_WORKSPACE" \
             -DOPENSSL_ROOT_DIR="$GITHUB_WORKSPACE/openssl-android" \
             -DOPENSSL_USE_STATIC_LIBS=TRUE \
+            -DOPENSSL_INCLUDE_DIR="$GITHUB_WORKSPACE/openssl-android/include" \
+            -DOPENSSL_SSL_LIBRARY="$GITHUB_WORKSPACE/openssl-android/lib/libssl.a" \
+            -DOPENSSL_CRYPTO_LIBRARY="$GITHUB_WORKSPACE/openssl-android/lib/libcrypto.a" \
+            -DOPENSSL_LIBRARIES="$GITHUB_WORKSPACE/openssl-android/lib/libssl.a;$GITHUB_WORKSPACE/openssl-android/lib/libcrypto.a" \
             -DCMAKE_C_STANDARD_LIBRARIES="-llog -lz -lm -ldl" \
             -DCMAKE_CXX_STANDARD_LIBRARIES="-llog -lz -lm -ldl"
           cmake --build build_mnncli -- -j"$(nproc)"
