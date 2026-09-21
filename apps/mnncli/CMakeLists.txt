@@ -45,16 +45,6 @@ find_library(MNN_LIBRARY
 message(STATUS "Found MNN library: ${MNN_LIBRARY}")
 message(STATUS "MNN source directory: ${MNN_SOURCE_DIR}")
 
-# Add libyuv dependency from the local git submodule for Android builds
-if(CMAKE_SYSTEM_NAME STREQUAL "Android")
-    # Ensure the submodule is available before adding it
-    if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/../../3rd_party/libyuv/CMakeLists.txt)
-        add_subdirectory(../../3rd_party/libyuv ${CMAKE_BINARY_DIR}/libyuv)
-    else()
-        message(FATAL_ERROR "libyuv submodule not found. Please ensure it is available in 3rd_party/libyuv.")
-    endif()
-endif()
-
 # Function to convert file to C++ array
 function(embed_file_as_c_array input_file output_file symbol_name)
     file(READ ${input_file} hex_content HEX)
@@ -136,13 +126,6 @@ set(MNNCLI_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/src/handlers/tts_command_handler.cpp
     ${MNN_TTS_SOURCES}
 )
-
-if(CMAKE_SYSTEM_NAME STREQUAL "Android")
-    # Not present in this tree; guards against a hard configure failure on Android.
-    if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/src/AndroidVideoDecoder.cpp)
-        list(APPEND MNNCLI_SOURCES ${CMAKE_CURRENT_LIST_DIR}/src/AndroidVideoDecoder.cpp)
-    endif()
-endif()
 
 add_executable(mnncli ${MNNCLI_SOURCES})
 
