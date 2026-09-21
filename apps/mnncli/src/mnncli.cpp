@@ -26,6 +26,7 @@
 #include "handlers/benchmark_command_handler.hpp"
 #include "handlers/config_command_handler.hpp"
 #include "handlers/info_command_handler.hpp"
+#include "handlers/tts_command_handler.hpp"
 #include "log_utils.hpp"
 #include "user_interface.hpp"
 
@@ -50,7 +51,8 @@ public:
         
         // List of supported handler-based commands
         static const std::vector<std::string> handler_commands = {
-            "run", "delete", "list", "search", "download", "model_info", "serve", "benchmark", "config", "info"
+            "run", "delete", "list", "search", "download", "model_info", "serve", "benchmark", "config", "info",
+            "tts"
         };
         
         // Check if this is a handler-based command
@@ -73,7 +75,8 @@ public:
                 dispatcher.Register(std::make_unique<mnncli::BenchmarkCommandHandler>());
                 dispatcher.Register(std::make_unique<mnncli::ConfigCommandHandler>());
                 dispatcher.Register(std::make_unique<mnncli::InfoCommandHandler>());
-                
+                dispatcher.Register(std::make_unique<mnncli::TtsCommandHandler>());
+
                 // Get spec for the command
                 const auto& spec = mnncli::GetSpec(cmd_name);
                 parser.SetCommandSpec(spec);
@@ -157,6 +160,7 @@ private:
         std::cout << "  benchmark  Run performance benchmarks\n";
         std::cout << "  config     Manage configuration (show, set, reset, help)\n";
         std::cout << "  info       Show system information\n";
+        std::cout << "  tts        Synthesize speech from text (bertvits / supertonic models)\n";
         std::cout << "\nGlobal Options:\n";
         std::cout << "  -v, --verbose  Enable verbose output for detailed debugging\n";
         std::cout << "  --help    Show this help message\n";
@@ -176,6 +180,7 @@ private:
         std::cout << "  mnncli run -p \"Hello world\"         # Run with prompt using default model\n";
         std::cout << "  mnncli serve qwen-7b --port 8000    # Start API server\n";
         std::cout << "  mnncli benchmark qwen-7b            # Run benchmark\n";
+        std::cout << "  mnncli tts supertonic-tts-mnn -t \"Hello\" -o out.wav  # Synthesize speech\n";
     }
     
     
