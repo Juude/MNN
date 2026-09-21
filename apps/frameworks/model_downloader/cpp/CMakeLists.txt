@@ -76,14 +76,18 @@ endif()
 # Android OpenSSL
 if(ANDROID)
     target_compile_definitions(mnn_model_downloader PRIVATE ANDROID_BUILD)
-    # OpenSSL configuration usually propagated from parent or checking locally
+    # The downloader talks to https:// endpoints, so it needs CPPHTTPLIB_OPENSSL_SUPPORT
+    # or httplib cannot do TLS at all. Prefer the in-tree OpenSSL config when present,
+    # otherwise fall back to the variables the parent build passed on the command line -
+    # the NDK toolchain sets CMAKE_FIND_ROOT_PATH_MODE_* to ONLY, which stops
+    # find_package(OpenSSL) from seeing anything outside the sysroot.
     set(OPENSSL_ANDROID_CONFIG "${MNN_SOURCE_DIR}/3rd_party/openssl-android/openssl-android-config.cmake")
     if(EXISTS "${OPENSSL_ANDROID_CONFIG}")
         include("${OPENSSL_ANDROID_CONFIG}")
-        if(OpenSSL_FOUND)
-             target_include_directories(mnn_model_downloader PRIVATE ${OPENSSL_INCLUDE_DIR})
-             target_compile_definitions(mnn_model_downloader PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT)
-        endif()
+    endif()
+    if(OpenSSL_FOUND OR OPENSSL_INCLUDE_DIR)
+        target_include_directories(mnn_model_downloader PRIVATE ${OPENSSL_INCLUDE_DIR})
+        target_compile_definitions(mnn_model_downloader PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT)
     endif()
 endif()
 
