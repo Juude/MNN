@@ -19,10 +19,6 @@
 #include <future>
 #include <string>
 
-#ifdef __ANDROID__
-#include "AndroidVideoDecoder.hpp"
-#endif
-
 using namespace MNN::Transformer;
 
 ModelRunner::ModelRunner(Llm* llm) : llm_(llm) {
@@ -158,56 +154,6 @@ int ModelRunner::ProcessVideoPrompt(const std::string& prompt_str, std::ostream*
     std::vector<MNN::Express::VARP> images;
     std::string final_prompt = text_part;
 
-#ifdef __ANDROID__
-    // Android native decoding path
-    LOG_DEBUG("Using Android native decoder for: " + video_path);
-
-    MNN::AndroidVideoDecoder decoder;
-    if (!decoder.init(video_path)) {
-        LOG_ERROR("Failed to initialize AndroidVideoDecoder for path: " + video_path);
-        return 1;
-    }
-
-    double fps = decoder.get_fps();
-    if (fps <= 0) fps = 30.0; // Fallback fps
-    int sample_rate = 2; // frames per second
-    int frame_interval = static_cast<int>(fps / sample_rate);
-    if (frame_interval <= 0) frame_interval = 1;
-
-            LOG_DEBUG("Sampling video at " + std::to_string(sample_rate) + " fps, interval: " + std::to_string(frame_interval));
-
-    int frame_idx = 0;
-    int frames_processed = 0;
-    while (frames_processed < 100 && !decoder.is_eos()) {
-        cv::Mat frame = decoder.decode_one_frame();
-        if (frame.empty()) {
-            if (decoder.is_eos()) break;
-            continue;
-        }
-
-        if (frame_idx % frame_interval == 0) {
-            int current_second = static_cast<int>(frame_idx / fps);
-            char timestamp[32];
-            snprintf(timestamp, sizeof(timestamp), "Frame at %02d:%02d: ", current_second / 60, current_second % 60);
-            final_prompt += timestamp;
-            final_prompt += "<img></img>";
-            
-            auto var = MatToVar(frame);
-            if (var.get() != nullptr) {
-                images.push_back(var);
-                frames_processed++;
-                LOG_DEBUG("Successfully processed frame " + std::to_string(frame_idx));
-            } else {
-                LOG_DEBUG("Failed to convert frame " + std::to_string(frame_idx) + " to VARP");
-            }
-        }
-        frame_idx++;
-    }
-    decoder.release();
-    LOG_DEBUG("Android native decoding finished. Processed " + std::to_string(frames_processed) + " frames.");
-
-#else
-    // Original OpenCV path for non-Android platforms
     LOG_DEBUG("Using OpenCV decoder for: " + video_path);
 
     // Check if video file exists
@@ -309,7 +255,6 @@ int ModelRunner::ProcessVideoPrompt(const std::string& prompt_str, std::ostream*
     
     cap.release();
     LOG_DEBUG("Frame reading completed");
-#endif // __ANDROID__
 
     // --- Common code for both platforms ---
     LOG_DEBUG("Total frames processed: " + std::to_string(images.size()));
