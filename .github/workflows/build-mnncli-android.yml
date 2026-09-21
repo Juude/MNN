@@ -1,0 +1,125 @@
+name: build-mnncli-android
+
+on:
+  workflow_dispatch:
+    inputs:
+      abi:
+        description: "Android ABI to build"
+        required: false
+        default: "arm64-v8a"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    env:
+      ABI: ${{ github.event.inputs.abi || 'arm64-v8a' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Locate or install Android NDK
+        id: ndk
+        run: |
+          set -euo pipefail
+          SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          if [ -n "${ANDROID_NDK_LATEST_HOME:-}" ] && [ -d "$ANDROID_NDK_LATEST_HOME" ]; then
+            NDK="$ANDROID_NDK_LATEST_HOME"
+          elif [ -d "$SDK/ndk" ] && [ -n "$(ls -A "$SDK/ndk" 2>/dev/null)" ]; then
+            NDK="$(ls -d "$SDK"/ndk/* | sort -V | tail -1)"
+          else
+            yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" "ndk;27.0.12077973" >/dev/null
+            NDK="$SDK/ndk/27.0.12077973"
+          fi
+          echo "ndk=$NDK" >> "$GITHUB_OUTPUT"
+          cat "$NDK/source.properties" | head -5
+
+      - name: Build Android OpenSSL (static)
+        run: |
+          set -euo pipefail
+          NDK="${{ steps.ndk.outputs.ndk }}"
+          export ANDROID_NDK_ROOT="$NDK"
+          export PATH="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
+          TAG="$(curl -sSL https://api.github.com/repos/openssl/openssl/releases/latest | jq -r .tag_name)"
+          echo "OpenSSL $TAG"
+          curl -sSL -o "${TAG}.tar.gz" "https://github.com/openssl/openssl/releases/download/${TAG}/${TAG}.tar.gz"
+          tar xf "${TAG}.tar.gz"
+          cd "$(echo openssl-*)"
+          case "$ABI" in
+            arm64-v8a) TARGET=android-arm64 ;;
+            armeabi-v7a) TARGET=android-arm ;;
+            x86_64) TARGET=android-x86_64 ;;
+            *) echo "unsupported abi"; exit 1 ;;
+          esac
+          ./Configure "$TARGET" -D__ANDROID_API__=24 no-shared no-tests --prefix="$GITHUB_WORKSPACE/openssl-android"
+          make -j"$(nproc)" build_libs
+          make install_sw
+          ls "$GITHUB_WORKSPACE/openssl-android/lib"
+
+      - name: Clone libyuv (required by mnncli on Android)
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/bilibili/libyuv.git 3rd_party/libyuv
+
+      - name: Stage 1 - build MNN (LLM, shared) for Android
+        run: |
+          set -euo pipefail
+          NDK="${{ steps.ndk.outputs.ndk }}"
+          cmake -B build_mnn -S . \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI="$ABI" \
+            -DANDROID_PLATFORM=android-24 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DMNN_BUILD_LLM=ON \
+            -DMNN_BUILD_SHARED_LIBS=ON \
+            -DMNN_SEP_BUILD=OFF \
+            -DMNN_LOW_MEMORY=ON \
+            -DMNN_CPU_WEIGHT_DEQUANT_GEMM=ON \
+            -DMNN_SUPPORT_TRANSFORMER_FUSE=ON \
+            -DLLM_SUPPORT_VISION=ON \
+            -DMNN_IMGCODECS=ON \
+            -DLLM_SUPPORT_AUDIO=ON \
+            -DMNN_BUILD_AUDIO=ON \
+            -DMNN_BUILD_OPENCV=OFF \
+            -DMNN_USE_OPENCV=OFF \
+            -DMNN_BUILD_DIFFUSION=OFF \
+            -DMNN_BUILD_TRAIN=OFF \
+            -DMNN_BUILD_DEMO=OFF \
+            -DMNN_BUILD_TEST=OFF \
+            -DMNN_BUILD_BENCHMARK=OFF \
+            -DMNN_BUILD_QUANTOOLS=OFF
+          cmake --build build_mnn -- -j"$(nproc)"
+          find build_mnn -maxdepth 1 -name "*.so*" -exec ls -lh {} \;
+
+      - name: Stage 2 - build mnncli for Android
+        run: |
+          set -euo pipefail
+          NDK="${{ steps.ndk.outputs.ndk }}"
+          cmake -B build_mnncli -S apps/mnncli \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI="$ABI" \
+            -DANDROID_PLATFORM=android-24 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DMNN_BUILD_DIR="$GITHUB_WORKSPACE/build_mnn" \
+            -DMNN_SOURCE_DIR="$GITHUB_WORKSPACE" \
+            -DOPENSSL_ROOT_DIR="$GITHUB_WORKSPACE/openssl-android" \
+            -DOPENSSL_USE_STATIC_LIBS=TRUE
+          cmake --build build_mnncli -- -j"$(nproc)"
+          ls -lh build_mnncli/mnncli
+          file build_mnncli/mnncli || true
+
+      - name: Package artifact
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp build_mnncli/mnncli dist/
+          find build_mnn -maxdepth 1 -name "*.so" -exec cp {} dist/ \;
+          NDK="${{ steps.ndk.outputs.ndk }}"
+          find "$NDK" -name "libc++_shared.so" | head -1 | xargs -I{} cp {} dist/ 2>/dev/null || true
+          ls -lh dist
+          tar czf "mnncli-$ABI.tar.gz" -C dist .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mnncli-${{ env.ABI }}
+          path: mnncli-${{ env.ABI }}.tar.gz
+          if-no-files-found: error
