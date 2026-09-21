@@ -78,6 +78,35 @@ endif()
 # Add model downloader library
 add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../frameworks/model_downloader/cpp ${CMAKE_BINARY_DIR}/model_downloader)
 
+# TTS support, reusing the standalone mnn_tts SDK from apps/frameworks/mnn_tts.
+# Its sources are compiled straight into the mnncli target instead of being pulled
+# in via add_subdirectory, because that CMakeLists always builds a SHARED libmnn_tts
+# against a hardcoded prebuilt libMNN.so path. The piper backend is excluded: the SDK
+# assigns a null impl for it and its espeak-ng dependency is not in the tree.
+set(MNN_TTS_DIR "${MNN_SOURCE_DIR}/apps/frameworks/mnn_tts")
+set(MNN_TTS_SOURCES
+    ${MNN_TTS_DIR}/src/mnn_tts_config.cpp
+    ${MNN_TTS_DIR}/src/mnn_tts_sdk.cpp
+    ${MNN_TTS_DIR}/src/mnn_tts_logger.cpp
+    ${MNN_TTS_DIR}/src/supertonic/mnn_supertonic_tts_impl.cpp
+    ${MNN_TTS_DIR}/src/bertvits2/an_to_cn.cpp
+    ${MNN_TTS_DIR}/src/bertvits2/utils.cpp
+    ${MNN_TTS_DIR}/src/bertvits2/mnn_bertvits2_tts_impl.cpp
+    ${MNN_TTS_DIR}/src/bertvits2/text_preprocessor.cpp
+    ${MNN_TTS_DIR}/src/bertvits2/pinyin.cpp
+    ${MNN_TTS_DIR}/src/bertvits2/chinese_g2p.cpp
+    ${MNN_TTS_DIR}/src/bertvits2/chinese_bert.cpp
+    ${MNN_TTS_DIR}/src/bertvits2/english_bert.cpp
+    ${MNN_TTS_DIR}/src/bertvits2/english_g2p.cpp
+    ${MNN_TTS_DIR}/src/bertvits2/tone_adjuster.cpp
+    ${MNN_TTS_DIR}/src/bertvits2/tts_generator.cpp
+    ${MNN_TTS_DIR}/src/bertvits2/word_spliter.cpp
+)
+
+# mnn_tts throws std::runtime_error and uses std::dynamic_pointer_cast, while MNN
+# itself is built with -fno-exceptions -fno-rtti.
+set_source_files_properties(${MNN_TTS_SOURCES} PROPERTIES COMPILE_OPTIONS "-fexceptions;-frtti")
+
 set(MNNCLI_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/src/mnncli.cpp
     ${CMAKE_CURRENT_LIST_DIR}/src/model_runner.cpp
@@ -104,6 +133,8 @@ set(MNNCLI_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/src/handlers/benchmark_command_handler.cpp
     ${CMAKE_CURRENT_LIST_DIR}/src/handlers/config_command_handler.cpp
     ${CMAKE_CURRENT_LIST_DIR}/src/handlers/info_command_handler.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/src/handlers/tts_command_handler.cpp
+    ${MNN_TTS_SOURCES}
 )
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Android")
@@ -120,6 +151,10 @@ target_include_directories(mnncli PRIVATE
     ${MNN_SOURCE_DIR}/3rd_party
     ${OPENSSL_INCLUDE_DIR}
     ${MNN_SOURCE_DIR}/transformers/llm/engine/app/jsonhpp
+    ${MNN_TTS_DIR}/include
+    ${MNN_TTS_DIR}/include/bertvits2
+    ${MNN_TTS_DIR}/include/supertonic
+    ${MNN_SOURCE_DIR}/apps/frameworks/3rd_party/include
 )
 
 # ... OpenCV configuration ...
