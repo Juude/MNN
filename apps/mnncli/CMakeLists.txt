@@ -164,8 +164,15 @@ if(APPLE)
 endif()
 
 # Link pthread and dl on Linux/macOS
-if(UNIX)
+if(UNIX AND NOT ANDROID)
+    # NOT ANDROID: bionic folds pthread into libc and has no separate -lpthread.
     target_link_libraries(mnncli PRIVATE pthread dl)
+endif()
+
+# Android system libraries (bionic): -llog for mnn_tts's __android_log_write, -lz for
+# MNN's compressed weights, -ldl for dlopen.
+if(ANDROID)
+    target_link_libraries(mnncli PRIVATE log z dl)
 endif()
 
 # Link OpenSSL static libraries
