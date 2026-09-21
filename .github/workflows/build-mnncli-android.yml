@@ -34,16 +34,18 @@ jobs:
           cat "$NDK/source.properties" | head -5
 
       - name: Build Android OpenSSL (static)
+        env:
+          OPENSSL_TAG: openssl-3.6.4
         run: |
           set -euo pipefail
           NDK="${{ steps.ndk.outputs.ndk }}"
           export ANDROID_NDK_ROOT="$NDK"
           export PATH="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
-          TAG="$(curl -sSL https://api.github.com/repos/openssl/openssl/releases/latest | jq -r .tag_name)"
-          echo "OpenSSL $TAG"
-          curl -sSL -o "${TAG}.tar.gz" "https://github.com/openssl/openssl/releases/download/${TAG}/${TAG}.tar.gz"
-          tar xf "${TAG}.tar.gz"
-          cd "$(echo openssl-*)"
+          echo "OpenSSL $OPENSSL_TAG"
+          curl -sSL -o openssl-src.tar.gz \
+            "https://github.com/openssl/openssl/releases/download/${OPENSSL_TAG}/${OPENSSL_TAG}.tar.gz"
+          mkdir -p openssl-src && tar xf openssl-src.tar.gz -C openssl-src --strip-components=1
+          cd openssl-src
           case "$ABI" in
             arm64-v8a) TARGET=android-arm64 ;;
             armeabi-v7a) TARGET=android-arm ;;
@@ -73,7 +75,6 @@ jobs:
             -DMNN_BUILD_SHARED_LIBS=ON \
             -DMNN_SEP_BUILD=OFF \
             -DMNN_LOW_MEMORY=ON \
-            -DMNN_CPU_WEIGHT_DEQUANT_GEMM=ON \
             -DMNN_SUPPORT_TRANSFORMER_FUSE=ON \
             -DLLM_SUPPORT_VISION=ON \
             -DMNN_IMGCODECS=ON \
