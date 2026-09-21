@@ -57,11 +57,6 @@ jobs:
           make install_sw
           ls "$GITHUB_WORKSPACE/openssl-android/lib"
 
-      - name: Clone libyuv (required by mnncli on Android)
-        run: |
-          set -euo pipefail
-          git clone --depth 1 https://github.com/bilibili/libyuv.git 3rd_party/libyuv
-
       - name: Stage 1 - build MNN (LLM, static) for Android
         run: |
           set -euo pipefail
