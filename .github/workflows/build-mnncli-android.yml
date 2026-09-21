@@ -103,6 +103,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DMNN_BUILD_DIR="$GITHUB_WORKSPACE/build_mnn" \
             -DMNN_SOURCE_DIR="$GITHUB_WORKSPACE" \
+            -DMNN_LIBRARY="$GITHUB_WORKSPACE/build_mnn/libMNN.a" \
             -DOPENSSL_ROOT_DIR="$GITHUB_WORKSPACE/openssl-android" \
             -DOPENSSL_USE_STATIC_LIBS=TRUE \
             -DOPENSSL_INCLUDE_DIR="$GITHUB_WORKSPACE/openssl-android/include" \
