@@ -72,7 +72,7 @@ jobs:
             -DANDROID_PLATFORM=android-24 \
             -DCMAKE_BUILD_TYPE=Release \
             -DMNN_BUILD_LLM=ON \
-            -DMNN_BUILD_SHARED_LIBS=ON \
+            -DMNN_BUILD_SHARED_LIBS=OFF \
             -DMNN_SEP_BUILD=OFF \
             -DMNN_LOW_MEMORY=ON \
             -DMNN_SUPPORT_TRANSFORMER_FUSE=ON \
@@ -89,7 +89,7 @@ jobs:
             -DMNN_BUILD_BENCHMARK=OFF \
             -DMNN_BUILD_QUANTOOLS=OFF
           cmake --build build_mnn -- -j"$(nproc)"
-          find build_mnn -maxdepth 1 -name "*.so*" -exec ls -lh {} \;
+          ls -lh build_mnn/libMNN.a
 
       - name: Stage 2 - build mnncli for Android
         run: |
@@ -103,7 +103,9 @@ jobs:
             -DMNN_BUILD_DIR="$GITHUB_WORKSPACE/build_mnn" \
             -DMNN_SOURCE_DIR="$GITHUB_WORKSPACE" \
             -DOPENSSL_ROOT_DIR="$GITHUB_WORKSPACE/openssl-android" \
-            -DOPENSSL_USE_STATIC_LIBS=TRUE
+            -DOPENSSL_USE_STATIC_LIBS=TRUE \
+            -DCMAKE_C_STANDARD_LIBRARIES="-llog -lz -lm -ldl" \
+            -DCMAKE_CXX_STANDARD_LIBRARIES="-llog -lz -lm -ldl"
           cmake --build build_mnncli -- -j"$(nproc)"
           ls -lh build_mnncli/mnncli
           file build_mnncli/mnncli || true
@@ -113,9 +115,13 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           cp build_mnncli/mnncli dist/
-          find build_mnn -maxdepth 1 -name "*.so" -exec cp {} dist/ \;
+          case "$ABI" in
+            arm64-v8a) TRIPLE=aarch64-linux-android ;;
+            armeabi-v7a) TRIPLE=arm-linux-androideabi ;;
+            x86_64) TRIPLE=x86_64-linux-android ;;
+          esac
           NDK="${{ steps.ndk.outputs.ndk }}"
-          find "$NDK" -name "libc++_shared.so" | head -1 | xargs -I{} cp {} dist/ 2>/dev/null || true
+          cp "$NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/$TRIPLE/libc++_shared.so" dist/
           ls -lh dist
           tar czf "mnncli-$ABI.tar.gz" -C dist .
 
