@@ -138,7 +138,10 @@ set(MNNCLI_SOURCES
 )
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Android")
-    list(APPEND MNNCLI_SOURCES ${CMAKE_CURRENT_LIST_DIR}/src/AndroidVideoDecoder.cpp)
+    # Not present in this tree; guards against a hard configure failure on Android.
+    if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/src/AndroidVideoDecoder.cpp)
+        list(APPEND MNNCLI_SOURCES ${CMAKE_CURRENT_LIST_DIR}/src/AndroidVideoDecoder.cpp)
+    endif()
 endif()
 
 add_executable(mnncli ${MNNCLI_SOURCES})
