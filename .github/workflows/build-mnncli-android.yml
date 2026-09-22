@@ -61,6 +61,12 @@ jobs:
         run: |
           set -euo pipefail
           NDK="${{ steps.ndk.outputs.ndk }}"
+          # Keep LLM_SUPPORT_HTTP_RESOURCE=OFF. It gates omni.cpp's `#include "httplib.h"`,
+          # and the llm target never defines CPPHTTPLIB_OPENSSL_SUPPORT, so leaving it ON
+          # puts a second httplib::Request layout (0x390 vs 0x3a0) into libMNN.a. The linker
+          # keeps one copy of the inline functions, so ~Request then runs the
+          # content_provider_ destructor against the wrong layout and every HTTPS call
+          # segfaults (fault addr 0x28, null vtable).
           cmake -B build_mnn -S . \
             -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
             -DANDROID_ABI="$ABI" \
