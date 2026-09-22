@@ -72,6 +72,7 @@ jobs:
             -DMNN_SEP_BUILD=OFF \
             -DMNN_LOW_MEMORY=ON \
             -DMNN_SUPPORT_TRANSFORMER_FUSE=ON \
+            -DLLM_SUPPORT_HTTP_RESOURCE=OFF \
             -DLLM_SUPPORT_VISION=ON \
             -DMNN_IMGCODECS=ON \
             -DLLM_SUPPORT_AUDIO=ON \
