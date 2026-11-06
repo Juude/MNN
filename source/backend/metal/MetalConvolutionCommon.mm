@@ -209,8 +209,19 @@ template <typename FType, typename TType>
     backend->commit();
 }
 
-template<typename DType>
-static std::pair<std::shared_ptr<MNN::Tensor>, float> getDequantScale(const float* scale, int size, MetalBackend *backend, bool asymmetric, int oc) {
+static inline float readDequantScale(float value) {
+    return value;
+}
+
+static inline float readDequantScale(int16_t bits) {
+    __fp16 value;
+    ::memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
+template<typename DType, typename SType>
+static std::pair<std::shared_ptr<MNN::Tensor>, float> getDequantScale(const SType* scale, int size, MetalBackend* backend,
+                                                                  bool asymmetric, int oc) {
     int totalCount = 0;
     if (asymmetric) {
         totalCount = size / 2;
@@ -240,8 +251,8 @@ static std::pair<std::shared_ptr<MNN::Tensor>, float> getDequantScale(const floa
             for (int z=0; z<oc; ++z) {
                 auto srcZ = scale + z * blockCount * 2;
                 for (int bi=0; bi<blockCount; ++bi) {
-                    float s = fabs(srcZ[2*bi+1]);
-                    float b = fabs(srcZ[2*bi+0]);
+                    float s = fabs(readDequantScale(srcZ[2*bi+1]));
+                    float b = fabs(readDequantScale(srcZ[2*bi+0]));
                     float temp = ALIMAX(s, b);
                     if(temp > max_data) {
                         max_data = temp;
@@ -252,15 +263,21 @@ static std::pair<std::shared_ptr<MNN::Tensor>, float> getDequantScale(const floa
             for (int z=0; z<oc; ++z) {
                 auto srcZ = scale + z * blockCount;
                 for (int bi=0; bi<blockCount; ++bi) {
-                    float s = srcZ[bi];
+                    float s = readDequantScale(srcZ[bi]);
                     if(s > max_data) {
                         max_data = s;
                     }
                 }
             }
         }
-        // too big scale may cause half precision loss
-        coef = 1000.0 / max_data;
+        // too big scale may cause half precision loss.
+        // Guard on max_data rather than isfinite(coef): -ffast-math constant-folds
+        // std::isfinite to true, so an all-zero alpha block would reach (DType)(0 * inf)
+        // and bake NaN halfs into the dequant table. 1e-35 keeps coef within float while
+        // leaving a degenerate block at coef = 1.
+        if (max_data > 1e-35f) {
+            coef = 1000.0 / max_data;
+        }
     }
     if (asymmetric) {
         for (int z=0; z<oc; ++z) {
@@ -270,8 +287,8 @@ static std::pair<std::shared_ptr<MNN::Tensor>, float> getDequantScale(const floa
             auto dstSZ = dst_scale + zo * blockCount * 8 + zi;
             auto dstBZ = dst_scale + zo * blockCount * 8 + zi + 4;
             for (int bi=0; bi<blockCount; ++bi) {
-                float s = srcZ[2*bi+1];
-                float b = srcZ[2*bi+0];
+                float s = readDequantScale(srcZ[2*bi+1]);
+                float b = readDequantScale(srcZ[2*bi+0]);
                 dstSZ[bi * 8] = (DType)(s * coef);
                 dstBZ[bi * 8] = (DType)(b * coef);
             }
@@ -284,7 +301,7 @@ static std::pair<std::shared_ptr<MNN::Tensor>, float> getDequantScale(const floa
             auto dstSZ = dst_scale + zo * blockCount * 8 + zi;
             auto dstBZ = dst_scale + zo * blockCount * 8 + zi + 4;
             for (int bi=0; bi<blockCount; ++bi) {
-                float s = srcZ[bi];
+                float s = readDequantScale(srcZ[bi]);
                 float b = 0.0f;
                 dstSZ[bi * 8] = (DType)(s * coef);
                 dstBZ[bi * 8] = b;
@@ -339,7 +356,7 @@ void MetalConvolutionCommon::loadWeight(const MNN::Op *op, bool loadWeightInt8) 
 
     std::shared_ptr<ConvolutionCommon::Int8Common> qnt = NULL;
     if (loadWeightInt8) {
-        qnt = ConvolutionCommon::load(op, backend(), false, true, (void *)srcGpuBuffer.contents);
+        qnt = ConvolutionCommon::load(op, backend(), false, true, (void *)srcGpuBuffer.contents, true);
     } else if (conv->quanParameter()) {
         qnt = ConvolutionCommon::load(op, backend(), true, false, (void *)srcGpuBuffer.contents);
     }
@@ -360,15 +377,19 @@ void MetalConvolutionCommon::loadWeight(const MNN::Op *op, bool loadWeightInt8) 
         bool int8Path = !int4Path && !useInt2 && !useInt3;
         int subBits = useInt2 ? 2 : (useInt3 ? 3 : 0);
         mWeight = weightTransform(group, oc, ic, kh, kw, (float*)qnt->weight.get(), int8Path, int4Path, srcGpuBuffer, subBits);
-        if(backend->useFp16InsteadFp32()) {
-            auto dequantParams = getDequantScale<__fp16>(qnt->alpha.get(), qnt->alphaSize, backend, qnt->asymmetric, oc);
-            mDequantScaleBias = dequantParams.first;
-            mScaleCoef = dequantParams.second;
+        const bool directHalf = qnt->alpha.get() == nullptr && qnt->alphaHalf.get() != nullptr;
+        std::pair<std::shared_ptr<MNN::Tensor>, float> dequantParams;
+        if (backend->useFp16InsteadFp32()) {
+            dequantParams = directHalf
+                ? getDequantScale<__fp16>(qnt->alphaHalf.get(), qnt->alphaSize, backend, qnt->asymmetric, oc)
+                : getDequantScale<__fp16>(qnt->alpha.get(), qnt->alphaSize, backend, qnt->asymmetric, oc);
         } else {
-            auto dequantParams = getDequantScale<float>(qnt->alpha.get(), qnt->alphaSize, backend, qnt->asymmetric, oc);
-            mDequantScaleBias = dequantParams.first;
-            mScaleCoef = dequantParams.second;
+            dequantParams = directHalf
+                ? getDequantScale<float>(qnt->alphaHalf.get(), qnt->alphaSize, backend, qnt->asymmetric, oc)
+                : getDequantScale<float>(qnt->alpha.get(), qnt->alphaSize, backend, qnt->asymmetric, oc);
         }
+        mDequantScaleBias = dequantParams.first;
+        mScaleCoef = dequantParams.second;
 
         mDequantBits = useInt2 ? 2 : (useInt3 ? 3 : (int4Path ? 4 : 8));
     } else if (qnt && qnt->weightFloat.get()) {

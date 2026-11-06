@@ -4,6 +4,7 @@
 //
 //  Created by wangzhaode on 2023/12/14.
 //
+#include <chrono>
 #include <functional>
 #include <fstream>
 #include <iomanip>
@@ -13,8 +14,20 @@
 #import "LLMInferenceEngineWrapper.h"
 #import <UIKit/UIApplication.h>
 #import <mach/mach.h>
+#import <Metal/Metal.h>
 #include <MNN/llm/llm.hpp>
+#include <MNN/expr/Executor.hpp>
+#include <MNN/expr/ExecutorScope.hpp>
+#include "MNNTestSuite.h"
 using namespace MNN::Transformer;
+
+// The profile flush is a no-op unless MNN.framework was built with
+// -DMNN_METAL_OP_PROFILE=ON. Needed because devicectl terminates the app with
+// SIGTERM once MNN_BENCH_DONE appears, so the profiler's static destructor --
+// the only other place the table is emitted -- never runs.
+namespace MNN {
+void MetalOpProfileFlush(); // internal symbol defined in backend/metal/MetalBackend.mm
+}
 
 // phys_footprint is the metric jetsam kills on; log it on a timer so a SIGKILL
 // mid-benchmark still leaves a memory trajectory in the console log.
@@ -113,10 +126,8 @@ static void WaitForAppActive() {
 - (instancetype)initWithCompletionHandler:(ModelLoadingCompletionHandler)completionHandler {
     self = [super init];
     if (self) {
-        // 在后台线程异步加载模型
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-            BOOL success = [self loadModel]; // 假设loadModel方法加载模型并返回加载的成功或失败
-            // 切回主线程回调
+            BOOL success = [self loadModel];
             dispatch_async(dispatch_get_main_queue(), ^{
                 completionHandler(success);
             });
@@ -127,6 +138,17 @@ static void WaitForAppActive() {
 
 - (BOOL)loadModel {
     if (!llm) {
+        // Op-test mode: the embedded speed tests allocate weight tensors for
+        // every layer up front; keeping the bundled LLM resident pushes the
+        // full-model groups over the device memory limit. runOpTest never
+        // touches `llm`, so skip the load entirely.
+        NSArray<NSString*>* launchArgs = [[NSProcessInfo processInfo] arguments];
+        for (NSUInteger i = 0; i + 1 < launchArgs.count; ++i) {
+            if ([launchArgs[i] isEqualToString:@"--bench-cmd"] && [launchArgs[i + 1] hasPrefix:@"runtest"]) {
+                NSLog(@"[MNN_BENCH] model_skipped (runtest mode)");
+                return YES;
+            }
+        }
         WaitForAppActive();
         std::string model_dir = GetMainBundleDirectory();
         std::string config_path = model_dir + "/config.json";
@@ -177,6 +199,10 @@ private:
         [self runFileBench:std::string([input UTF8String]) output:os];
     } else if ([input hasPrefix:@"bench "]) {
         [self runFixedBench:std::string([input UTF8String]) output:os];
+    } else if ([input hasPrefix:@"needlebench "]) {
+        [self runNeedleBench:std::string([input UTF8String]) output:os];
+    } else if ([input hasPrefix:@"runtest "]) {
+        [self runOpTest:[[input substringFromIndex:8] UTF8String] output:os];
     } else if (std::string([input UTF8String]) == "benchmark") {
         // do benchmark
         std::string model_dir = GetMainBundleDirectory();
@@ -260,7 +286,10 @@ private:
     llm->set_config("{\"sampler_type\":\"greedy\"}");
     llm->load();
     std::ostringstream answer;
-    llm->response(question, &answer, "");
+    llm->response(question, &answer, "", 30);
+    std::ostringstream tokenIds;
+    for (int token : llm->getContext()->output_tokens) tokenIds << token << ',';
+    NSLog(@"[MNN_IPAD_ASK_TOKENS] %s", tokenIds.str().c_str());
     os << answer.str() << "\n<eop>";
     NSLog(@"[MNN_ASK_BEGIN] backend=%s question=%s", backend.c_str(), question.c_str());
     NSLog(@"[MNN_ASK_ANSWER] %s", answer.str().c_str());
@@ -356,11 +385,8 @@ static void LogAnswerChunks(const std::string& answer) {
     }
     if (maxPromptBytes > 20 * 1024) {
         llm->set_config("{\"attention_mode\":10}");
-        // Measured on iPhone 13 Pro: jetsam kills at ~2.0GB phys_footprint and
-        // the post-prefill baseline at 8K tokens + int8 KV is ~1.3GB, so
-        // uncapped decode still dies (or stalls in the page compressor) once
-        // KV grows past ~700MB. Cap decode at 4096 tokens (~+230MB int8 KV)
-        // so the run survives to report instead of being SIGKILLed.
+        // Uncapped decode past an 8K-token prefill can grow the int8 KV past the
+        // jetsam limit; 4096 tokens keeps the run alive long enough to report.
         if (max_new > 4096) {
             max_new = 4096;
         }
@@ -409,8 +435,144 @@ static void LogAnswerChunks(const std::string& answer) {
     NSLog(@"[MNN_BENCH_DONE]");
 }
 
+// cmd: "needlebench <cpu|metal> <max_input_tokens> <max_new_tokens> [attention_mode] [threads]"
+// Each case file holds one full user message (document + question). The LLM compresses it
+// to max_input_tokens before prefill, mirroring the host needlebench auto-compress path.
+- (void)runNeedleBench:(const std::string&)cmd output:(std::ostream&)os {
+    std::istringstream iss(cmd);
+    std::string tag, backend;
+    int max_input = 64000, max_new = 64, attn_mode = -1, threads = 4, chunk = 0, kv_mmap = 0;
+    iss >> tag >> backend;
+    int v;
+    if (iss >> v) max_input = v;
+    if (iss >> v) max_new = v;
+    if (iss >> v) attn_mode = v;
+    if (iss >> v) threads = v;
+    if (iss >> v) chunk = v;
+    if (iss >> v) kv_mmap = v;
+    if ((backend != "cpu" && backend != "metal") || max_input <= 0 || max_new <= 0) {
+        os << "usage: needlebench <cpu|metal> <max_input_tokens> <max_new_tokens> [attention_mode] [threads] [chunk] [kv_mmap]\n";
+        os << "<eop>";
+        NSLog(@"[MNN_BENCH_ERROR] invalid needlebench command: %s", cmd.c_str());
+        return;
+    }
+    std::vector<std::string> casePaths;
+    NSString *docRoot = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject
+                         stringByAppendingPathComponent:@"needlebench"];
+    NSArray *docs = [[[NSFileManager defaultManager] contentsOfDirectoryAtPath:docRoot error:nil]
+                     sortedArrayUsingSelector:@selector(compare:)];
+    for (NSString *f in docs) {
+        if ([f hasSuffix:@".txt"]) {
+            casePaths.push_back(std::string([docRoot UTF8String]) + "/" + std::string([f UTF8String]));
+        }
+    }
+    if (casePaths.empty()) {
+        NSString *bundleDir = [NSString stringWithUTF8String:GetMainBundleDirectory()];
+        NSArray *all = [[[NSFileManager defaultManager] contentsOfDirectoryAtPath:bundleDir error:nil]
+                        sortedArrayUsingSelector:@selector(compare:)];
+        for (NSString *f in all) {
+            if ([f hasPrefix:@"needlecase_"] && [f hasSuffix:@".txt"]) {
+                casePaths.push_back(std::string([bundleDir UTF8String]) + "/" + std::string([f UTF8String]));
+            }
+        }
+    }
+    if (casePaths.empty()) {
+        os << "no needlebench case files found\n<eop>";
+        NSLog(@"[MNN_BENCH_ERROR] no needlebench case files");
+        return;
+    }
+    WaitForAppActive();
+    llm.reset();
+    std::string model_dir = GetMainBundleDirectory();
+    llm.reset(Llm::createLLM(model_dir + "/config.json"));
+    if (!llm) {
+        os << "createLLM failed\n<eop>";
+        NSLog(@"[MNN_BENCH_ERROR] createLLM failed");
+        return;
+    }
+    llm->set_config("{\"tmp_path\":\"" + GetCleanTmpDirectory() + "\", \"use_mmap\":true}");
+    llm->set_config("{\"backend_type\":\"" + backend + "\"}");
+    llm->set_config("{\"thread_num\":" + std::to_string(threads) + "}");
+    llm->set_config("{\"reuse_kv\":false}");
+    llm->set_config("{\"prompt_cache\":false}");
+    llm->set_config("{\"async\":false}");
+    llm->set_config("{\"sampler_type\":\"greedy\"}");
+    llm->set_config("{\"max_new_tokens\":" + std::to_string(max_new) + "}");
+    llm->set_config("{\"token_compress\":" + std::to_string(max_input) + "}");
+    llm->set_config("{\"jinja\":{\"context\":{\"enable_thinking\":false}}}");
+    if (attn_mode >= 0) {
+        llm->set_config("{\"attention_mode\":" + std::to_string(attn_mode) + "}");
+    }
+    if (chunk > 0) {
+        llm->set_config("{\"chunk\":" + std::to_string(chunk) + "}");
+    }
+    if (kv_mmap) {
+        llm->set_config("{\"kvcache_mmap\":true}");
+    }
+    llm->load();
+    auto context = llm->getContext();
+    NSString *resultDir = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject
+                           stringByAppendingPathComponent:@"needlebench_results"];
+    [[NSFileManager defaultManager] removeItemAtPath:resultDir error:nil];
+    [[NSFileManager defaultManager] createDirectoryAtPath:resultDir withIntermediateDirectories:YES attributes:nil error:nil];
+    NSLog(@"[MNN_NB] needlebench backend=%s cases=%zu max_input=%d max_new=%d attn_mode=%d threads=%d chunk=%d kv_mmap=%d",
+          backend.c_str(), casePaths.size(), max_input, max_new, attn_mode, threads, chunk, kv_mmap);
+    for (size_t i = 0; i < casePaths.size(); ++i) {
+        std::ifstream fs(casePaths[i]);
+        std::string content((std::istreambuf_iterator<char>(fs)), std::istreambuf_iterator<char>());
+        while (!content.empty() && (content.back() == '\n' || content.back() == '\r' || content.back() == ' ')) {
+            content.pop_back();
+        }
+        if (content.empty()) {
+            continue;
+        }
+        std::string name = casePaths[i].substr(casePaths[i].find_last_of('/') + 1);
+        auto start = std::chrono::steady_clock::now();
+        auto tokens = llm->tokenizer_encode(llm->apply_chat_template(ChatMessages{{"user", content}}));
+        double compress_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        std::ostringstream answer;
+        dispatch_source_t memTimer = StartFootprintLogger(name.c_str());
+        llm->response(tokens, &answer, nullptr, max_new);
+        dispatch_source_cancel(memTimer);
+        double total_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        double prefill_s = context->prefill_us / 1e6;
+        double decode_s = context->decode_us / 1e6;
+        NSLog(@"[MNN_NB] case=%s input_tokens=%zu compress_s=%.2f prefill_s=%.2f decode_s=%.2f gen=%d total_s=%.2f status=%d",
+              name.c_str(), tokens.size(), compress_s, prefill_s, decode_s, context->gen_seq_len, total_s,
+              (int)context->status);
+        LogAnswerChunks(answer.str());
+        std::ostringstream record;
+        record << "case=" << name << "\n"
+               << "backend=" << backend << "\n"
+               << "max_input_tokens=" << max_input << "\n"
+               << "input_tokens=" << tokens.size() << "\n"
+               << "compress_s=" << compress_s << "\n"
+               << "prefill_s=" << prefill_s << "\n"
+               << "decode_s=" << decode_s << "\n"
+               << "gen_tokens=" << context->gen_seq_len << "\n"
+               << "total_s=" << total_s << "\n"
+               << "status=" << (int)context->status << "\n"
+               << "--- answer ---\n" << answer.str() << "\n";
+        [[NSData dataWithBytes:record.str().c_str() length:record.str().size()]
+            writeToFile:[resultDir stringByAppendingPathComponent:[NSString stringWithUTF8String:name.c_str()]]
+                 atomically:YES];
+    }
+    os << "<eop>";
+    NSLog(@"[MNN_BENCH_DONE]");
+}
+
 // cmd: "bench <cpu|metal> <prompt_len> <decode_len> [repeat] [threads] [attention_mode]"
 - (void)runFixedBench:(const std::string&)cmd output:(std::ostream&)os {
+    // MNN_IPAD_PROFILE_TIMELINE=1 redirects the Metal per-op GPU timeline CSV
+    // into the app's Documents container so the host can pull it with
+    // `devicectl device copy from`. Must be set before any Metal backend use:
+    // MetalEnv parses its environment once, on first access.
+    if (getenv("MNN_IPAD_PROFILE_TIMELINE")) {
+        std::string dir =
+            NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject.UTF8String;
+        setenv("MNN_METAL_OP_PROFILE_TIMELINE", (dir + "/metal_timeline.csv").c_str(), 1);
+        NSLog(@"[MNN_IPAD_PROFILE_TIMELINE] %s/metal_timeline.csv", dir.c_str());
+    }
     std::istringstream iss(cmd);
     std::string tag, backend;
     int prompt_len = 0, decode_len = 0, repeat = 3, threads = 4, attn_mode = -1;
@@ -451,6 +613,9 @@ static void LogAnswerChunks(const std::string& answer) {
     llm->load();
     auto context = llm->getContext();
     std::vector<int> tokens(prompt_len, 16);
+    NSLog(@"[MNN_IPAD_STATE] begin thermal=%ld low_power=%d",
+          (long)[NSProcessInfo processInfo].thermalState,
+          [NSProcessInfo processInfo].lowPowerModeEnabled);
     double pf_sum = 0, dc_sum = 0;
     int done = 0;
     for (int i = 0; i < repeat + 1; ++i) {
@@ -458,6 +623,12 @@ static void LogAnswerChunks(const std::string& answer) {
         double prefill_s = context->prefill_us / 1e6;
         double decode_s = context->decode_us / 1e6;
         int gen_len = context->gen_seq_len;
+        NSLog(@"[MNN_IPAD_STATE] run=%d thermal=%ld status=%d gen=%d",
+              i, (long)[NSProcessInfo processInfo].thermalState, (int)context->status, gen_len);
+        if (context->status != LlmStatus::MAX_TOKENS_FINISHED || gen_len != decode_len) {
+            NSLog(@"[MNN_BENCH_ERROR] incomplete fixed-length generation");
+            return;
+        }
         double pf_speed = prefill_s > 0 ? prompt_len / prefill_s : 0;
         double dc_speed = decode_s > 0 ? gen_len / decode_s : 0;
         if (i == 0) {
@@ -482,8 +653,92 @@ static void LogAnswerChunks(const std::string& answer) {
        << "avg  decode speed = " << std::fixed << std::setprecision(2) << dc_avg << " tok/s\n"
        << "##################################\n";
     os << "<eop>";
+    MNN::MetalOpProfileFlush();
     NSLog(@"[MNN_BENCH] avg backend=%s threads=%d prompt=%d decode=%d prefill_tok_s=%.2f decode_tok_s=%.2f",
           backend.c_str(), threads, prompt_len, decode_len, pf_avg, dc_avg);
     NSLog(@"[MNN_BENCH_DONE]");
+}
+
+// cmd: "runtest <TestName> [backend precision thread flag memory] [ENV=value ...]"
+// Mirrors the host invocation ./run_test.out <name> <backend> <precision>
+// <thread> <flag> <memory>. Positional args are optional and default to the
+// Metal fp16 low-memory single-thread setup (1 2 1 "" 2); tokens containing
+// '=' are exported as environment variables. Test output goes through
+// MNN_PRINT (syslog + stderr), captured by devicectl --console.
+- (void)runOpTest:(const char*)spec output:(std::ostream&)os {
+    std::istringstream iss(spec);
+    std::string name;
+    iss >> name;
+    if (name.empty()) {
+        os << "usage: runtest <TestName> [backend precision thread flag memory] [ENV=value ...]\n<eop>";
+        NSLog(@"[MNN_BENCH_ERROR] invalid runtest command: %s", spec);
+        return;
+    }
+    if (name == "metalCounters") {
+        id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+        NSLog(@"[MNN_METAL_COUNTERS] device=%@ sets=%lu", device.name, (unsigned long)device.counterSets.count);
+        for (id<MTLCounterSet> set in device.counterSets) {
+            NSLog(@"[MNN_METAL_COUNTER_SET] %@ counters=%lu", set.name, (unsigned long)set.counters.count);
+            for (id<MTLCounter> counter in set.counters) {
+                NSLog(@"[MNN_METAL_COUNTER] set=%@ name=%@", set.name, counter.name);
+            }
+        }
+        os << "metal counter sets dumped\n<eop>";
+        NSLog(@"[MNN_BENCH_DONE] runtest metalCounters wrongs=0");
+        return;
+    }
+    int backend   = MNN_FORWARD_METAL;
+    int precision = (int)MNN::BackendConfig::Precision_Low;
+    int thread    = 1;
+    int memory    = (int)MNN::BackendConfig::Memory_Low;
+    std::string flag;
+    std::string kv;
+    int positional = 0;
+    while (iss >> kv) {
+        if (kv.find('=') != std::string::npos) {
+            size_t eq = kv.find('=');
+            setenv(kv.substr(0, eq).c_str(), kv.substr(eq + 1).c_str(), 1);
+            continue;
+        }
+        switch (positional++) {
+            case 0: backend   = atoi(kv.c_str()); break;
+            case 1: precision = atoi(kv.c_str()); break;
+            case 2: thread    = atoi(kv.c_str()); break;
+            case 3: flag      = kv; break;
+            case 4: memory    = atoi(kv.c_str()); break;
+            default: break;
+        }
+    }
+    WaitForAppActive();
+    MNN::BackendConfig config;
+    config.precision = (MNN::BackendConfig::PrecisionMode)precision;
+    config.memory    = (MNN::BackendConfig::MemoryMode)memory;
+    auto exe = MNN::Express::Executor::newExecutor((MNNForwardType)backend, config, thread);
+    if (exe == nullptr) {
+        os << "create executor failed\n<eop>";
+        NSLog(@"[MNN_BENCH_ERROR] runtest %s: create executor failed (backend=%d)", name.c_str(), backend);
+        return;
+    }
+    MNN::Express::ExecutorScope scope(exe);
+    exe->setGlobalExecutorConfig((MNNForwardType)backend, config, thread);
+    auto st = MNNTestSuite::get();
+    st->pStaus.memory = memory;
+    st->pStaus.precision = precision;
+    st->pStaus.power = 0;
+    st->pStaus.forwardType = backend;
+    st->pStaus.dynamicOption = 0;
+    st->pStaus.thread = thread;
+    NSLog(@"[MNN_BENCH] runtest %s begin (backend=%d precision=%d thread=%d memory=%d flag=%s)",
+          name.c_str(), backend, precision, thread, memory, flag.c_str());
+    NSLog(@"[MNN_IPAD_OP_STATE] begin thermal=%ld low_power=%d",
+          (long)[NSProcessInfo processInfo].thermalState,
+          [NSProcessInfo processInfo].lowPowerModeEnabled);
+    int wrongs = MNNTestSuite::run(name.c_str(), precision, flag.c_str());
+    MNN::MetalOpProfileFlush();
+    NSLog(@"[MNN_IPAD_OP_STATE] end thermal=%ld low_power=%d",
+          (long)[NSProcessInfo processInfo].thermalState,
+          [NSProcessInfo processInfo].lowPowerModeEnabled);
+    os << "runtest " << name << " wrongs=" << wrongs << "\n<eop>";
+    NSLog(@"[MNN_BENCH_DONE] runtest %s wrongs=%d", name.c_str(), wrongs);
 }
 @end

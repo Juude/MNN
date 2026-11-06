@@ -10,7 +10,7 @@
 //  weights, the comparison is backend-vs-backend (not quantization-limited), so
 //  a tight relative-error threshold catches real kernel bugs.
 //
-//  Kernel coverage (single conv op, Apple-GPU with simdgroup-matrix, e.g. M4):
+//  Kernel coverage (single conv op, Apple-GPU with simdgroup-matrix):
 //    - conv1x1_gemv_g4m1_2sg_wquant_sg   decode area==1, +/- split K
 //    - conv1x1_gemv_g16_wquant_sg        lm_head (oc > 16384)
 //    - conv1x1_gemv_g4mN_wquant_sg       multi-token W4/8 (in-shader dequant)
@@ -19,9 +19,9 @@
 //    - conv1x1_fused_q4_gemm_stage[_m64] Q4 prefill on tensor-API devices
 //  NOT reachable from a single op on such a device (documented, not covered):
 //    - conv1x1_gemv_g8_wquant_sg W2/3 multi-token: only selected when the device
-//      lacks simdgroup-matrix (e.g. A13); M-series routes W2/3 prefill to the
-//      outer-dequant path instead (see MetalConvolution1x1.mm).
-//    - fusion variants (GATE_UP_FUSED / QKV_FUSED / LN_FUSED / GEMV_2OCQUAD_PER_SG): only built
+//      lacks simdgroup-matrix; otherwise W2/3 prefill takes the outer-dequant path
+//      (see MetalConvolution1x1.mm).
+//    - fusion variants (GATE_UP_FUSED / QKV_FUSED / LN_FUSED / GEMV_SG_OC_QUADS_2): only built
 //      by fusion leaders inside a full LLM graph, not by an isolated conv op.
 //
 //  Requires the low-memory weight-quant path (MNN_LOW_MEMORY); skipped otherwise.
@@ -37,6 +37,8 @@
 #include "MNNTestSuite.h"
 #include "TestUtils.h"
 #include "CommonOpCreator.hpp"
+#include "core/IDSTEncoder.hpp"
+#include "core/TensorUtils.hpp"
 
 using namespace MNN;
 using namespace MNN::Express;
@@ -211,17 +213,29 @@ public:
         std::vector<CaseShape> shapes = {
             {512, 256, 1, 1, 32, "2sg decode + split K (oc%8==0)", false},
             {512, 252, 1, 1, 32, "2sg decode no-splitk (oc%8!=0)", false},
-            {2048, 64, 1, 1, 32, "2sg decode + Q4 block32 W16", true},
-            {2048, 64, 1, 1, 64, "2sg decode + Q4 block64 W16", true},
-            {2048, 64, 1, 1, 128, "2sg decode + Q4 block128 W16", true},
-            {2048, 64, 1, 1, 256, "2sg decode + Q4 block256 W16", true},
-            {6144, 64, 1, 1, 64, "2sg decode + Q4 block64 W16 (96 blocks)", true},
+            {2048, 64, 1, 1, 32, "2sg decode + Q4 block32", true},
+            {2048, 64, 1, 1, 64, "2sg decode + Q4 block64", true},
+            {2048, 64, 1, 1, 128, "2sg decode + Q4 block128", true},
+            {2048, 64, 1, 1, 256, "2sg decode + Q4 block256", true},
+            {2560, 64, 1, 1, 64, "2sg decode + Q4 block64 (40 blocks, split K small grid lanes 1)", true},
+            {3584, 64, 1, 1, 64, "2sg decode + Q4 block64 (56 blocks, split K small grid lanes 2)", true},
+            {2560, 512, 1, 1, 64, "2sg decode + Q4 block64 (40 blocks, base M5 split K lanes 4)", true},
+            {2560, 768, 1, 1, 64, "2sg decode + Q4 block64 (40 blocks, Pro split K lanes 4)", true},
+            {2560, 1296, 1, 1, 64, "2sg decode + Q4 block64 (40 blocks, base M5 split K past the TG budget)", true},
+            {6144, 64, 1, 1, 64, "2sg decode + Q4 block64 (96 blocks)", true},
+            {6144, 1296, 1, 1, 64, "2sg decode + Q4 block64 (96 blocks, Pro tg4 oc>1280)", true},
+            // Quant blocks wider than a cache line on the plain route, where
+            // gemvPlainLanesPerBlock overrides the kernel's default lane split.
+            {4096, 64, 1, 1, 128, "2sg decode tg4 + Q4 block128 (32 blocks, cache-line lanes)", true},
+            {4096, 8, 1, 1, 128, "2sg decode 2quad + Q4 block128 (32 blocks, cache-line lanes)", true},
+            {8192, 64, 1, 1, 128, "2sg decode tg4 + Q4 block128 (64 blocks, cache-line lanes)", true},
             {128, 16400, 1, 1, 32, "g16 lm_head (oc>16384)", false},
-            {2048, 16400, 1, 1, 64, "g16 lm_head + Q4 block64 W16", true},
-            {512, 16400, 1, 1, 128, "g16 lm_head + Q4 block128 W16", true},
-            {512, 16400, 1, 1, 256, "g16 lm_head + Q4 block256 W16", true},
-            // oc % 16 == 0 routes to the G16_SPLIT_K branch.
-            {2048, 16512, 1, 1, 64, "g16 splitk lm_head", false},
+            {2048, 16400, 1, 1, 64, "g16 lm_head + Q4 block64", true},
+            {512, 16400, 1, 1, 128, "g16 lm_head + Q4 block128", true},
+            {512, 16400, 1, 1, 256, "g16 lm_head + Q4 block256", true},
+            // oc % 16 == 0 and an even block count keep decode on the 2sg route,
+            // so only the odd-oc shapes above reach g16.
+            {2048, 16512, 1, 1, 64, "2sg decode lm_head-sized oc", false},
             {2048, 64, 8, 8, 32, "fused Q4 GEMM M32 + block32 fp16 metadata", true},
             {2048, 64, 8, 8, 64, "fused Q4 GEMM M32 + block64 fp16 metadata", true},
             {2048, 64, 8, 8, 128, "fused Q4 GEMM M32 + block128 fp16 metadata", true},
@@ -237,6 +251,20 @@ public:
             {2048, 2176, 1, 2, 64, "g4mN multi-token + Q4 block64", true},
             {2048, 2176, 4, 8, 32, "gemm sg-matrix prefill (W4/8)", false},
             {2048, 2176, 4, 8, 64, "gemm sg-matrix prefill + Q4 block64", true},
+            // Quant blocks that are not a multiple of 32 K must avoid the 8-quad tile GEMMs.
+            {2048, 64, 1, 1, 16, "2sg decode + block16", false},
+            {2048, 2176, 1, 2, 16, "g4mN multi-token + block16", false},
+            {2048, 2176, 4, 8, 16, "in-shader prefill + block16 (W4/8)", false},
+            {256, 128, 8, 8, 16, "prefill area=64 + block16 (all bits)", false},
+            {256, 128, 8, 8, 8, "prefill area=64 + block8 (all bits)", false},
+            {1536, 128, 8, 8, 48, "prefill area=64 + block48 (all bits)", false},
+            {1536, 128, 8, 16, 48, "prefill area=128 + block48 (all bits)", false},
+            // Non-power-of-two lanes per block leave spare lanes that must not repeat a block.
+            {1536, 64, 1, 1, 48, "2sg decode oc%16==0 + block48", false},
+            {1536, 60, 1, 1, 48, "2sg decode no-splitk + block48 (default lanes 3)", false},
+            {1536, 128, 1, 2, 48, "g4mN multi-token + block48 (lanes 12)", false},
+            {1584, 16400, 1, 1, 48, "g16 lm_head + block48 (33 blocks, lanes 12)", false},
+            {4096, 64, 1, 1, 128, "2sg decode tg4 + block128 (all bits, W3 cache-line lanes)", false},
         };
 
         bool allPass = true;
@@ -246,8 +274,10 @@ public:
             // outer-dequant path instead (already covered by the area=64 shape above), so
             // skip W2/3 for exactly those two shapes.
             bool skipW23 = (s.ih * s.iw > 1) && ((size_t)s.ic * s.oc > (size_t)4 * 1024 * 1024);
+            // Decode routes are shared by Q4 and Q8, so q4Only decode shapes also run W8.
+            const bool w8Decode = s.ih * s.iw == 1;
             for (int nbit : {2, 3, 4, 8}) {
-                if (s.q4Only && nbit != 4) {
+                if (s.q4Only && nbit != 4 && !(nbit == 8 && w8Decode)) {
                     continue;
                 }
                 if ((nbit == 2 || nbit == 3) && skipW23) {
@@ -269,5 +299,259 @@ public:
 };
 
 MNNTestSuiteRegister(MetalConvWQuantTest, "op/conv_wquant_metal");
+
+class MetalConvFp16MetadataTest : public MNNTestCase {
+    static bool checkCase(int ic, int oc, int blockSize, int nbits, bool asymmetric, int aMin, float quantScale,
+                          int& metalConvs) {
+        const int blocks = ic / blockSize, offset = 1 << (nbits - 1);
+        const int codeMin = asymmetric ? -offset : 1 - offset;
+        const int codeRange = offset - codeMin;
+        std::vector<int8_t> codes(ic * oc);
+        std::vector<float> alpha((asymmetric ? 2 : 1) * oc * blocks), bias(oc), weight(ic * oc);
+        for (int o = 0; o < oc; ++o) {
+            bias[o] = (o % 9 - 4) / 64.0f;
+            for (int b = 0; b < blocks; ++b) {
+                const int k = o * blocks + b;
+                const float scale = (0.0937f + 0.0113f * ((o + 3 * b) % 5)) / offset;
+                if (asymmetric) {
+                    alpha[2 * k] = -0.0737f + 0.0193f * ((o * 3 + b) % 7) + (aMin == 1 ? offset * scale : 0);
+                    alpha[2 * k + 1] = scale;
+                } else {
+                    alpha[k] = scale;
+                }
+                for (int c = 0; c < blockSize; ++c) {
+                    codes[o * ic + b * blockSize + c] = (o * 7 + b * 3 + c * 11) % codeRange + codeMin;
+                }
+            }
+        }
+        auto encoded = IDSTEncoder::encode(nullptr, alpha, blockSize, oc * blocks, asymmetric, codes.data(), aMin,
+                                           {nbits, false, 16});
+        encoded->quantScale = quantScale;
+        MNNTEST_ASSERT(encoded->scaleStorage == ScaleStorageType_FP16 && encoded->alpha.empty());
+        MNNTEST_ASSERT(encoded->alphaFp16.size() == alpha.size());
+        for (int i = 0; i < alpha.size(); ++i) {
+            half_float::half h;
+            ::memcpy(&h, &encoded->alphaFp16[i], sizeof(uint16_t));
+            alpha[i] = float(h);
+        }
+        // Both twins share encoded codes; FP32 metadata is an exact widening of the serialized FP16 payload.
+        OpT twins[2];
+        for (int t = 0; t < 2; ++t) {
+            twins[t].type = OpType_Convolution;
+            twins[t].main.type = OpParameter_Convolution2D;
+            twins[t].main.value = new Convolution2DT;
+            auto conv = twins[t].main.AsConvolution2D();
+            conv->common.reset(new Convolution2DCommonT);
+            conv->common->inputCount = ic;
+            conv->common->outputCount = oc;
+            conv->common->kernelX = conv->common->kernelY = 1;
+            conv->bias = bias;
+            conv->quanParameter.reset(new IDSTQuanT(*encoded));
+            if (t == 1) {
+                conv->quanParameter->scaleStorage = ScaleStorageType_FP32;
+                conv->quanParameter->alpha = alpha;
+                conv->quanParameter->alphaFp16.clear();
+            }
+        }
+        // Apply legacy folding and quantScale in FP32, without rounding corrected coefficients back to half.
+        if (asymmetric && aMin <= 0) {
+            for (int k = 0; k < oc * blocks; ++k) {
+                alpha[2 * k] -= (aMin == 0 ? -128 : aMin) * alpha[2 * k + 1];
+            }
+        }
+        for (auto& v : alpha) {
+            v *= quantScale;
+        }
+        for (int i = 0; i < weight.size(); ++i) {
+            const int k = i / blockSize;
+            weight[i] = asymmetric ? codes[i] * alpha[2 * k + 1] + alpha[2 * k] : codes[i] * alpha[k];
+        }
+        for (int area : {1, 64}) {
+            std::vector<float> input(ic * area), ref;
+            for (int i = 0; i < input.size(); ++i) {
+                input[i] = ((i * 13) % 67 - 33) / 64.0f;
+            }
+            referenceConv1x1(input, weight, bias, ref, ic, oc, area, false, false);
+            auto x = _Input({1, ic, 1, area}, NCHW, halide_type_of<float>());
+            auto inputPtr = x->writeMap<float>();
+            MNNTEST_ASSERT(inputPtr != nullptr);
+            ::memcpy(inputPtr, input.data(), input.size() * sizeof(float));
+            x->unMap();
+            x = _Convert(x, NC4HW4);
+            const int before = metalConvs;
+            auto yHalf = _Convert(Variable::create(Expr::create(&twins[0], {x})), NCHW);
+            auto yFloat = _Convert(Variable::create(Expr::create(&twins[1], {x})), NCHW);
+            auto halfPtr = yHalf->readMap<float>();
+            auto floatPtr = yFloat->readMap<float>();
+            MNNTEST_ASSERT(halfPtr && floatPtr && metalConvs == before + 2);
+            MNNTEST_ASSERT(yHalf->getInfo()->size == ref.size() && yFloat->getInfo()->size == ref.size());
+            for (int i = 0; i < ref.size(); ++i) {
+                if (!std::isfinite(halfPtr[i]) || !std::isfinite(floatPtr[i]) || halfPtr[i] != floatPtr[i]) {
+                    MNN_ERROR("Metal FP16 metadata twin mismatch: w%d aMin=%d scale=%g area=%d index=%d\n",
+                              nbits, aMin, quantScale, area, i);
+                    return false;
+                }
+            }
+            if (!checkVectorByRelativeError(halfPtr, ref.data(), (int)ref.size(), 0.005f)) {
+                MNN_ERROR("Metal FP16 metadata reference mismatch: ic=%d oc=%d w%d asym=%d aMin=%d scale=%g area=%d\n",
+                          ic, oc, nbits, asymmetric, aMin, quantScale, area);
+                return false;
+            }
+        }
+        return true;
+    }
+
+public:
+    bool run(int precision) override {
+        if (MNNTestSuite::get()->pStaus.forwardType != MNN_FORWARD_METAL) {
+            MNN_PRINT("Metal FP16 metadata: skipped (requires backend=1).\n");
+            return true;
+        }
+        int metalConvs = 0;
+        BackendConfig config;
+        config.precision = (BackendConfig::PrecisionMode)precision;
+        config.memory = BackendConfig::Memory_Low;
+        auto exe = Executor::newExecutor(MNN_FORWARD_METAL, config, 1);
+        MNNTEST_ASSERT(exe != nullptr);
+        ExecutorScope scope(exe);
+        exe->setCallBack([](const std::vector<Tensor*>&, const OperatorInfo*) { return true; },
+                         [&metalConvs](const std::vector<Tensor*>& outputs, const OperatorInfo* info) {
+            if (info && info->type() == "Convolution" && !outputs.empty()) {
+                auto backend = TensorUtils::getDescribeOrigin(outputs[0])->getBackend();
+                if (backend && backend->type() == MNN_FORWARD_METAL) {
+                    ++metalConvs;
+                }
+            }
+            return true;
+        });
+        for (int nbits : {2, 3, 4, 8}) {
+            MNNTEST_ASSERT(checkCase(64, 17, 32, nbits, false, 1, 1.0f, metalConvs));
+            MNNTEST_ASSERT(checkCase(64, 17, 32, nbits, true, 1, 1.0f, metalConvs));
+            MNNTEST_ASSERT(checkCase(128, 40, 64, nbits, true, -(1 << (nbits - 1)), 1.0f, metalConvs));
+        }
+        MNNTEST_ASSERT(checkCase(128, 40, 64, 8, true, 0, 1.0f, metalConvs));
+        MNNTEST_ASSERT(checkCase(64, 17, 32, 4, false, 1, 1.7f, metalConvs));
+        MNNTEST_ASSERT(checkCase(64, 17, 32, 4, true, 1, 1.7f, metalConvs));
+        MNNTEST_ASSERT(checkCase(128, 40, 64, 4, true, -8, 1.7f, metalConvs));
+        return true;
+    }
+};
+MNNTestSuiteRegister(MetalConvFp16MetadataTest, "op/conv_wquant_metal/fp16_metadata");
+
+class MetalConvLmHeadTest : public MNNTestCase {
+public:
+    bool run(int precision) override {
+        if (MNNTestSuite::get()->pStaus.forwardType != MNN_FORWARD_METAL) {
+            MNN_PRINT("Metal lm_head: skipped (requires backend=1).\n");
+            return true;
+        }
+        for (int ic : {1024, 2048}) {
+            if (!runShape(ic, precision)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+private:
+    bool runShape(int ic, int precision) {
+        constexpr int oc = 248320, blockSize = 64;
+        const int blocks = ic / blockSize;
+        std::vector<float> inputs[2], refs[2];
+        for (int t = 0; t < 2; ++t) {
+            inputs[t].resize(ic);
+            refs[t].resize(oc);
+            for (int c = 0; c < ic; ++c) {
+                inputs[t][c] = ((c * (13 + 4 * t) + 11 * t) % 67 - 33) / 64.0f;
+            }
+        }
+        std::unique_ptr<OpT> op(new OpT);
+        op->type = OpType_Convolution;
+        op->main.type = OpParameter_Convolution2D;
+        op->main.value = new Convolution2DT;
+        auto conv = op->main.AsConvolution2D();
+        conv->common.reset(new Convolution2DCommonT);
+        conv->common->inputCount = ic;
+        conv->common->outputCount = oc;
+        conv->common->kernelX = conv->common->kernelY = 1;
+        conv->bias.resize(oc);
+        {
+            std::vector<int8_t> codes((size_t)ic * oc);
+            std::vector<float> alpha((size_t)2 * oc * blocks);
+            for (int o = 0; o < oc; ++o) {
+                const float bias = (o % 9 - 4) / 64.0f;
+                conv->bias[o] = bias;
+                double sums[2] = {bias, bias};
+                for (int b = 0; b < blocks; ++b) {
+                    const size_t k = (size_t)o * blocks + b;
+                    const float minimum = ((o + b) % 7 - 8) / 32.0f;
+                    const float scale = (1 + (o + 3 * b) % 5) / 256.0f;
+                    alpha[2 * k] = minimum;
+                    alpha[2 * k + 1] = scale;
+                    for (int c = 0; c < blockSize; ++c) {
+                        const int channel = b * blockSize + c;
+                        const size_t index = (size_t)o * ic + channel;
+                        uint32_t hash = (uint32_t)index * 1664525u + 1013904223u;
+                        hash ^= hash >> 16;
+                        const int code = (int)(hash & 15u) - 8;
+                        codes[index] = (int8_t)code;
+                        const float weight = (code + 8) * scale + minimum;
+                        for (int t = 0; t < 2; ++t) {
+                            sums[t] += (double)weight * inputs[t][channel];
+                        }
+                    }
+                }
+                for (int t = 0; t < 2; ++t) {
+                    refs[t][o] = (float)sums[t];
+                }
+            }
+            conv->quanParameter = IDSTEncoder::encode(
+                nullptr, alpha, blockSize, oc * blocks, true, codes.data(), -8, {4, false});
+        }
+        BackendConfig config;
+        config.precision = (BackendConfig::PrecisionMode)precision;
+        config.memory = BackendConfig::Memory_Low;
+        auto exe = Executor::newExecutor(MNN_FORWARD_METAL, config, 1);
+        MNNTEST_ASSERT(exe != nullptr);
+        ExecutorScope scope(exe);
+        int metalConvs = 0;
+        exe->setCallBack([](const std::vector<Tensor*>&, const OperatorInfo*) { return true; },
+                        [&metalConvs](const std::vector<Tensor*>& outputs, const OperatorInfo* info) {
+            if (info && info->type() == "Convolution" && !outputs.empty()) {
+                auto backend = TensorUtils::getDescribeOrigin(outputs[0])->getBackend();
+                if (backend && backend->type() == MNN_FORWARD_METAL) {
+                    ++metalConvs;
+                }
+            }
+            return true;
+        });
+        auto x = _Input({1, ic, 1, 1}, NCHW, halide_type_of<float>());
+        auto packed = _Convert(x, NC4HW4);
+        auto y = _Convert(Variable::create(Expr::create(std::move(op), {packed})), NCHW);
+        for (int t = 0; t < 2; ++t) {
+            auto input = x->writeMap<float>();
+            MNNTEST_ASSERT(input != nullptr);
+            ::memcpy(input, inputs[t].data(), ic * sizeof(float));
+            x->unMap();
+            const int before = metalConvs;
+            auto output = y->readMap<float>();
+            MNNTEST_ASSERT(output && y->getInfo()->size == oc && metalConvs == before + 1);
+            const float tolerance = precision == BackendConfig::Precision_High ? 0.00001f : 0.005f;
+            for (int o = 0; o < oc; ++o) {
+                if (!std::isfinite(output[o]) ||
+                    std::fabs(output[o] - refs[t][o]) > tolerance * (1.0f + std::fabs(refs[t][o]))) {
+                    MNN_ERROR("Metal lm_head reference failed: input=%d oc=%d got=%g ref=%g\n",
+                              t, o, output[o], refs[t][o]);
+                    return false;
+                }
+            }
+            y->unMap();
+        }
+        MNN_PRINT("Metal lm_head oracle passed: ic=%d oc=%d block=%d inputs=2 precision=%d\n",
+                  ic, oc, blockSize, precision);
+        return true;
+    }
+};
+MNNTestSuiteRegister(MetalConvLmHeadTest, "op/conv_wquant_metal/lm_head");
 
 #endif // MNN_LOW_MEMORY

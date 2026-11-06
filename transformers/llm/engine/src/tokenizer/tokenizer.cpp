@@ -105,7 +105,13 @@ Tokenizer* Tokenizer::createTokenizer(const std::string& filename) {
         std::string bin_line;
         std::getline(bin_file, bin_line);   // re-consume the magic/type line
         tokenizer->load_special(bin_file);
-        pt->load_vocab_binary(bin_file);
+        // Callers only test the returned pointer for null: a vocab that failed to
+        // parse must not come back as a half-initialized tokenizer.
+        if (!pt->load_vocab_binary(bin_file)) {
+            printf("Failed: malformed binary vocab in: %s.\n", filename.c_str());
+            delete pt;
+            return nullptr;
+        }
         bin_file.close();
         tokenizer->cache_special_tokens();
         return tokenizer;
@@ -131,7 +137,11 @@ Tokenizer* Tokenizer::createTokenizer(const std::string& filename) {
     // load special tokens
     tokenizer->load_special(tok_file);
     // load vocabs
-    tokenizer->load_vocab(tok_file);
+    if (!tokenizer->load_vocab(tok_file)) {
+        printf("Failed: malformed text vocab in: %s.\n", filename.c_str());
+        delete tokenizer;
+        return nullptr;
+    }
     tok_file.close();
     tokenizer->cache_special_tokens();
     return tokenizer;
@@ -819,17 +829,28 @@ bool HuggingfaceTokenizer::load_vocab(std::ifstream& tok_file) {
     // 1. Get nums
     int vocab_len = 0;
     int merge_len = 0;
+    bool crlf = false;
     if (std::getline(tok_file, line)) {
+        crlf = !tok_file.eof() && !line.empty() && line.back() == '\r';
         std::istringstream line_str(line);
         line_str >> vocab_len >> merge_len;
     }
+
+    // The numeric header identifies consistent record endings, not token content.
+    // Preserve trailing CR data in LF files and in the final unterminated record.
+    auto read_line = [&tok_file, crlf](std::string& value) {
+        std::getline(tok_file, value);
+        if (crlf && !tok_file.eof() && !value.empty() && value.back() == '\r') {
+            value.pop_back();
+        }
+    };
 
     // 2. Load vocab
     decoder_.resize(vocab_len);
     encoder_.reserve(vocab_len);
 
     for (int i = 0; i < vocab_len; i++) {
-        std::getline(tok_file, line);
+        read_line(line);
         // Move string to decoder to avoid copy, then use reference for encoder
         decoder_[i] = std::move(line);
         encoder_.emplace(decoder_[i], i);
@@ -838,7 +859,7 @@ bool HuggingfaceTokenizer::load_vocab(std::ifstream& tok_file) {
     // 3. Load merge_rules
     bpe_ranks_.reserve(merge_len);
     for (int i = 0; i < merge_len; i++) {
-        std::getline(tok_file, line);
+        read_line(line);
 
         size_t d = line.find(' ');
         if (d != std::string::npos) {
@@ -963,14 +984,11 @@ void HuggingfaceTokenizer::encode(const std::string& str, std::vector<int>& ids)
      */
     static const std::regex re("('s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n[:alpha:][:digit:]]?[[:alpha:]]+|[[:digit:]]| ?[^\\s[:alpha:][:digit:]]+[\r\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+", std::regex_constants::icase);
 
-    std::string input = str;
     std::vector<std::string> result;
-    std::smatch match;
 
     std::string token;
-    while (std::regex_search(input, match, re)) {
-        token = match.str(0);
-        input = match.suffix().str();
+    for (auto it = std::sregex_iterator(str.begin(), str.end(), re); it != std::sregex_iterator(); ++it) {
+        token = it->str(0);
         std::wstring wtoken;
         for (char c : token) {
             wtoken.push_back(b2u_.at(uint8_t(c)));
@@ -1120,9 +1138,11 @@ static std::vector<std::string> create_bytes_char_map() {
 
 class NFKCNormalizer : public Normalizer {
     std::vector<std::pair<uint32_t, std::string>> table_;
+    bool clean_controls_ = true;
 public:
     NFKCNormalizer() = default;
-    NFKCNormalizer(std::vector<std::pair<uint32_t, std::string>>&& t) : table_(std::move(t)) {}
+    NFKCNormalizer(std::vector<std::pair<uint32_t, std::string>>&& t, bool clean_controls = true)
+        : table_(std::move(t)), clean_controls_(clean_controls) {}
     std::string normalize(const std::string& text) const override {
         if (table_.empty()) return text;
         std::string out;
@@ -1134,7 +1154,7 @@ public:
             int r = Unicode::utf8_decode(ptr + i, len - i, &cp);
             // SentencePiece replaces control/format chars (Cc/Cf) with space,
             // except for common whitespace chars that are kept as-is
-            if (cp != 0 && cp != '\n' && cp != '\r' && cp != '\t' &&
+            if (clean_controls_ && cp != 0 && cp != '\n' && cp != '\r' && cp != '\t' &&
                 ((cp >= 1 && cp <= 0x1F) || cp == 0x7F ||  // Cc: C0/C1 control
                  (cp >= 0x80 && cp <= 0x9F) ||              // Cc: C1 control
                  cp == 0x200D || cp == 0x200C ||             // Cf: ZWJ, ZWNJ
@@ -2284,6 +2304,10 @@ bool PipelineTokenizer::load_vocab_binary(std::ifstream& file) {
                 auto table = read_norm_table(p);
                 return make_unique_<NFKCNormalizer>(std::move(table));
             }
+            case 9: { // NFC preserves control/format characters, unlike SentencePiece cleanup.
+                auto table = read_norm_table(p);
+                return make_unique_<NFKCNormalizer>(std::move(table), false);
+            }
             case 7: {  // new BertNormalizer with embedded NFD
                 uint8_t clean = read_u8(p);
                 uint8_t chinese = read_u8(p);
@@ -2354,6 +2378,11 @@ bool PipelineTokenizer::load_vocab_binary(std::ifstream& file) {
             for (uint32_t i = 0; i < vocab_size; i++) {
                 StringRef sr = read_str_ref(ptr);
                 int id = (int)read_u32(ptr);
+                // id is a signed 32-bit file field used directly as a vector index.
+                if (id < 0 || (uint32_t)id >= vocab_size) {
+                    MNN_ERROR("[Tokenizer] Vocab entry %u has id %d outside [0, %u).\n", i, id, vocab_size);
+                    return false;
+                }
                 id_to_token[id] = sr;
                 sorted_vocab[i] = {sr.ptr, sr.len, id};
             }
@@ -2378,6 +2407,10 @@ bool PipelineTokenizer::load_vocab_binary(std::ifstream& file) {
             for (uint32_t i = 0; i < vocab_size; i++) {
                 StringRef sr = read_str_ref(ptr);
                 int id = (int)read_u32(ptr);
+                if (id < 0 || (uint32_t)id >= vocab_size) {
+                    MNN_ERROR("[Tokenizer] Vocab entry %u has id %d outside [0, %u).\n", i, id, vocab_size);
+                    return false;
+                }
                 id_to_token[id] = sr;
                 sorted_vocab[i] = {sr.ptr, sr.len, id};
             }
@@ -2395,6 +2428,10 @@ bool PipelineTokenizer::load_vocab_binary(std::ifstream& file) {
                 StringRef sr = read_str_ref(ptr);
                 int id = (int)read_u32(ptr);
                 double score = read_f64(ptr);
+                if (id < 0 || (uint32_t)id >= vocab_size) {
+                    MNN_ERROR("[Tokenizer] Vocab entry %u has id %d outside [0, %u).\n", i, id, vocab_size);
+                    return false;
+                }
                 id_to_token[id] = sr;
                 scores[id] = score;
                 sorted_vocab[i] = {sr.ptr, sr.len, id};

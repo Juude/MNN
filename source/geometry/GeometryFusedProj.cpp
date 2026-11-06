@@ -3,11 +3,10 @@
 //  MNN
 //
 //  Geometry for the export-time fused projection op (OpType_FusedLinear).
-//  Metal, OpenCL (buffer mode), Vulkan (buffer variant) and CUDA keep the op
-//  whole (native / composite executions); every other backend gets the graph
-//  decomposed back into the member conv1x1 ops (+ SiLU-mul / binary RMSNorm),
-//  which is exactly the unfused graph — so no per-backend implementation is
-//  required for correctness.
+//  Metal and OpenCL use native executions; CPU, Vulkan (buffer variant) and
+//  CUDA use composite executions. Other backends get the graph decomposed
+//  back into the member conv1x1 ops (+ SiLU-mul / binary RMSNorm), which is
+//  exactly the unfused graph.
 //
 
 #include "geometry/GeometryComputer.hpp"
@@ -60,9 +59,17 @@ class GeometryFusedProj : public GeometryComputer {
             return FusedProjCommon::nativeEnvelopeOk(op, numInputs, numOutputs) &&
                    FusedProjCommon::allMembersAre1x1(op);
         }
-        // Vulkan (buffer variant) and CUDA drive the members as child
-        // executions; the runtime says whether that composite path is compiled
-        // in (image-variant Vulkan and older runtimes answer 0).
+        if (context.forwardType() == MNN_FORWARD_CPU || context.forwardType() == MNN_FORWARD_CPU_EXTENSION) {
+            return 0 != context.runtimeStatus(STATUS_SUPPORT_FUSED_PROJ) &&
+                   FusedProjCommon::nativeEnvelopeOk(op, numInputs, numOutputs);
+        }
+        // Hexagon always drives the members as child executions (the composite path is unconditional),
+        // so it decides by type like Metal / OpenCL rather than asking the runtime.
+        if (context.forwardType() == MNN_FORWARD_HEXAGON) {
+            return FusedProjCommon::compositeEnvelopeOk(op, numInputs, numOutputs);
+        }
+        // Vulkan (buffer variant) and CUDA also drive the members as child executions, but the runtime
+        // says whether that composite path is compiled in (image-variant Vulkan answers 0).
         if (context.forwardType() == MNN_FORWARD_VULKAN || context.forwardType() == MNN_FORWARD_CUDA) {
             return 0 != context.runtimeStatus(STATUS_SUPPORT_FUSED_PROJ) &&
                    FusedProjCommon::compositeEnvelopeOk(op, numInputs, numOutputs);
@@ -100,7 +107,7 @@ public:
         const int numProjOut = isGateUp ? 1 : numConvs;
         const int expectedCommands = (hasLn ? 1 : 0) + (isGateUp ? 3 : numConvs);
         const int expectedExtras = (hasLn ? 1 : 0) + (isGateUp ? 2 : 0);
-        if ((isGateUp && numConvs != 2) || (!isGateUp && (numConvs < 3 || numConvs > 4)) ||
+        if ((isGateUp && numConvs != 2) || (!isGateUp && (numConvs < 2 || numConvs > 4)) ||
             inputs.size() < (hasLn ? 2 : 1) || outputs.size() < numProjOut + (hasLn ? 1 : 0) ||
             res.command.size() != expectedCommands || res.extras.size() != expectedExtras) {
             return false;
@@ -161,7 +168,9 @@ public:
         if (isGateUp && numConvs != 2) {
             return false;
         }
-        if (!isGateUp && (numConvs < 3 || numConvs > 4)) {
+        // 2 members without act_silu_mul is the split-LoRA gate/up unfold; the
+        // per-member loop below handles it the same way as qkv.
+        if (!isGateUp && (numConvs < 2 || numConvs > 4)) {
             return false;
         }
         // Projection source: has_ln → normalized hidden computed by an

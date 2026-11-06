@@ -22,14 +22,13 @@ private:
     ErrorCode ensurePageTableCapacity(int pageCount);
     void updatePageTable();
 
-    float mAttnScale = 0.0f;
+    float attentionScale(int headDim) const;
     std::shared_ptr<Tensor> mWorkspace;
     std::shared_ptr<Tensor> mPageTable;
     bool mUseGeneratedCausalMask = false;
     bool mVisionState = false;
     std::shared_ptr<HexagonKVCacheManager> mKVCacheManager;
     KVMeta* mMeta = nullptr;
-    int mMaxKVLen = 0;
     int mPageTableCapacity = 0;
     uint64_t mSyncedPageGeneration = (uint64_t)-1;
 };

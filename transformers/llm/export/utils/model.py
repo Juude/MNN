@@ -1,3 +1,4 @@
+import copy
 import os
 import torch
 import importlib
@@ -11,6 +12,7 @@ from utils.config import LlmConfig
 from utils.tokenizer import LlmTokenizer
 from utils.model_mapper import ModelMapper
 from utils.transformers import Embedding, Rotary, Decoder, Lm
+from utils.qat import mark_qat_sources, filter_qat_unexpected_keys
 
 
 def remap_hunyuan_vl_state_dict(state_dict):
@@ -65,6 +67,27 @@ def load_hunyuan_vl_state_dict(model_path):
         shard_path = shard_file if os.path.isabs(shard_file) else os.path.join(model_path, shard_file)
         state_dict.update(load_file(shard_path, device='cpu'))
     return state_dict
+
+
+def load_mobilemoe(model_path, config, **load_kwargs):
+    from transformers.dynamic_module_utils import get_class_from_dynamic_module
+
+    remote_class = get_class_from_dynamic_module(config.auto_map['AutoModelForCausalLM'], model_path)
+    # The released remote code uses the Transformers 4.x tied-weight API.
+    if Version(importlib.metadata.version('transformers')) >= Version('5.0.0'):
+        class MobileMoEForExport(remote_class):
+            config_class = type(config)
+            _tied_weights_keys = {'lm_head.weight': 'model.embed_tokens.weight'}
+        remote_class = MobileMoEForExport
+
+    # Its scaled RoPE constructor reads tensor values, which is invalid on meta.
+    # Defer only the non-persistent RoPE buffer until weights have been loaded.
+    load_config = copy.deepcopy(config)
+    load_config.rope_scaling = None
+    model = remote_class.from_pretrained(model_path, config=load_config, **load_kwargs)
+    model.config.rope_scaling = config.rope_scaling
+    model.model.rotary_emb = type(model.model.rotary_emb)(config, device='cpu')
+    return model
 
 
 class LlmModel(PreTrainedModel):
@@ -138,6 +161,8 @@ class LlmModel(PreTrainedModel):
             'lfm2_vl': 'Lfm2VlForConditionalGeneration',
             'gemma4': 'Gemma4ForConditionalGeneration',
             'hunyuan_vl': 'HunYuanVLForConditionalGeneration',
+            'minicpmv4_7': 'MiniCPMV4_7ForConditionalGeneration',
+            'minicpm_ocr': 'MiniCPMOcrForConditionalGeneration',
         }
         if model_type is None or model_type not in MODEL_CLASS_MAPPING:
             return AutoModelForCausalLM
@@ -154,6 +179,7 @@ class LlmModel(PreTrainedModel):
         config.export_args = args
         model_type = config.model_type
         model_class = cls.get_model_class(model_type)
+        source_names = None
 
         load_kwargs = {'trust_remote_code': True}
         if Version(importlib.metadata.version("transformers")) >= Version("4.56.0"):
@@ -181,6 +207,8 @@ class LlmModel(PreTrainedModel):
                     original_model = AutoModelForCausalLM.from_config(original_config, trust_remote_code=True)
                 original_model.to_empty(device="cpu")
                 cls._sanitize_skip_weight_tensors(original_model)
+        elif model_type == 'mobilemoe':
+            original_model = load_mobilemoe(pretrained_model_name_or_path, config.origin_config, **load_kwargs)
         elif model_type == 'lfm2_audio':
             # LFM2-Audio uses liquid_audio package, not standard HF class
             from pathlib import Path
@@ -199,8 +227,13 @@ class LlmModel(PreTrainedModel):
                     original_model = model_class._from_config(original_config)
                 else:
                     original_model = model_class(original_config)
-                state_dict = remap_hunyuan_vl_state_dict(load_hunyuan_vl_state_dict(pretrained_model_name_or_path))
+                state_dict = load_hunyuan_vl_state_dict(pretrained_model_name_or_path)
+                if args is not None and getattr(args, 'qat', False):
+                    source_names = remap_hunyuan_vl_state_dict({key: key for key in state_dict})
+                state_dict = remap_hunyuan_vl_state_dict(state_dict)
                 missing, unexpected = original_model.load_state_dict(state_dict, strict=False)
+                if args is not None and getattr(args, 'qat', False):
+                    unexpected = filter_qat_unexpected_keys(unexpected, state_dict, args)
                 if missing or unexpected:
                     raise RuntimeError(
                         "HunyuanVL fallback weight load mismatch: "
@@ -224,6 +257,8 @@ class LlmModel(PreTrainedModel):
             original_model = adapter.merge_and_unload(progressbar=True)
 
         original_model = original_model.eval()
+        if args is not None and getattr(args, 'qat', False):
+            mark_qat_sources(original_model, args, source_names)
         model = cls(config, args)
 
         ModelMapper.do_map(model, original_model, config.model_map['model'])
@@ -234,6 +269,8 @@ class LlmModel(PreTrainedModel):
         )
 
         # Rebuild modules
+        if args is not None and getattr(args, 'qat', False):
+            source_lm = model.lm if model.lm is not None else model.embed
         if model.lm is None:
             out_features, in_features = model.embed.weight.shape
             model.lm = torch.nn.Linear(in_features, out_features, bias=False)
@@ -243,6 +280,9 @@ class LlmModel(PreTrainedModel):
             out_features, in_features = weight.shape
             model.lm = torch.nn.Linear(in_features, out_features, bias=False)
             model.lm.weight = weight
+        if args is not None and getattr(args, 'qat', False) and model.lm is not source_lm:
+            from utils.qat import copy_qat_source
+            copy_qat_source(source_lm, model.lm)
 
         model.embed = Embedding(model.embed, config)
 
@@ -621,10 +661,14 @@ class EmbeddingModel(LlmModel):
             model.is_reranker = True
             from transformers import AutoModelForSequenceClassification
             origin_model = AutoModelForSequenceClassification.from_pretrained(pretrained_model_name_or_path, config=config, trust_remote_code=True).float().eval()
+            if args is not None and getattr(args, 'qat', False):
+                mark_qat_sources(origin_model, args)
             model.classifier = origin_model.classifier
             origin_model = origin_model.new
         else:
             origin_model = AutoModel.from_pretrained(pretrained_model_name_or_path, config=config, trust_remote_code=True).float().eval()
+            if args is not None and getattr(args, 'qat', False):
+                mark_qat_sources(origin_model, args)
 
         transformer = origin_model.encoder
         model.lm = origin_model.pooler
@@ -672,11 +716,15 @@ class EmbeddingModel(LlmModel):
             model_file = os.path.join(pretrained_model_name_or_path, 'model.safetensors')
             state_dict = load_file(model_file)
             missing, unexpected = original_model.load_state_dict(state_dict, strict=False)
+            if args is not None and getattr(args, 'qat', False):
+                unexpected = filter_qat_unexpected_keys(unexpected, state_dict, args)
             if missing or unexpected:
                 raise RuntimeError(f'Failed to load qwen3_vl embedding checkpoint correctly. missing={missing[:8]}, unexpected={unexpected[:8]}')
             original_model = original_model.eval()
 
         original_model = original_model.float()
+        if args is not None and getattr(args, 'qat', False):
+            mark_qat_sources(original_model, args)
         model = cls(config, args)
         ModelMapper.do_map(model, original_model, config.model_map['model'])
 
@@ -721,7 +769,10 @@ class EmbeddingModel(LlmModel):
         embeddings = inputs_embeds + position_embeddings + self.token_type_embeddings
         hidden_states = self.embedding_layernorm(embeddings)
         for i in range(self.config.num_hidden_layers):
-            hidden_states = self.blocks[i](hidden_states, attention_mask)[0]
+            layer_out = self.blocks[i](hidden_states, attention_mask)
+            # transformers>=5.0 BertLayer returns a plain tensor; older versions
+            # return a tuple whose first element is the hidden states.
+            hidden_states = layer_out[0] if isinstance(layer_out, (tuple, list)) else layer_out
         sentence_embeddings = hidden_states[:, 0]
         sentence_embeddings = torch.nn.functional.normalize(sentence_embeddings, p=2, dim=1)
         return sentence_embeddings

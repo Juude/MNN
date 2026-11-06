@@ -106,11 +106,14 @@ inline bool nativeEnvelopeOk(const Op* op, size_t numInputs, size_t numOutputs) 
         return false;
     }
     const int numConvs = (int)param->convs()->size();
+    // 2 members without act_silu_mul is the split-LoRA gate/up unfold; the
+    // native executions drive members in a loop and only branch on
+    // act_silu_mul for the SiLU-mul extra, so it needs no special casing.
     if (param->act_silu_mul()) {
         if (numConvs != 2) {
             return false;
         }
-    } else if (numConvs < 3 || numConvs > 4) {
+    } else if (numConvs < 2 || numConvs > 4) {
         return false;
     }
     const int numProjOut = param->act_silu_mul() ? 1 : numConvs;
@@ -179,7 +182,7 @@ inline bool membersIntQuantOk(const Op* op) {
 }
 
 // Keep-whole predicate for the composite (child-execution) backends: the
-// geometry gate and the Vulkan / CUDA creators must all ask exactly this.
+// geometry gate and the Vulkan / CUDA / Hexagon creators must all ask exactly this.
 inline bool compositeEnvelopeOk(const Op* op, size_t numInputs, size_t numOutputs) {
     return nativeEnvelopeOk(op, numInputs, numOutputs) && allMembersAre1x1(op) && membersIntQuantOk(op);
 }

@@ -4,11 +4,14 @@
 #include <cstdlib>
 #include <cstring>
 #include <algorithm>
+#include <chrono>
+#include <condition_variable>
 #include <memory>
 #include <mutex>
 #include <pthread.h>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 #include <MNN/MNNDefine.h>
@@ -640,6 +643,75 @@ static void releaseDspPower(HexagonContext* context) {
     releaseDspPowerLocked(context);
 }
 
+// Keeps the DSP power vote across flushes and drops it once the DSP has been idle for
+// kDspPowerIdleReleaseMs. Re-voting on every flush lets the cDSP clock fall between flushes; inside
+// an app process this cut LLM decode throughput by ~40% (39 vs 66 tok/s on SM8850). Builds without
+// MNN_HEXAGON_APP_POWER_HOLD (command line tools, servers) keep the original per-flush path.
+static constexpr int kDspPowerIdleReleaseMs = 100;
+
+struct HexagonRuntime::PowerIdleKeeper {
+    explicit PowerIdleKeeper(HexagonContext* context) : mContext(context) {
+    }
+    ~PowerIdleKeeper() {
+        {
+            std::lock_guard<std::mutex> lock(mMutex);
+            mStop = true;
+        }
+        mCond.notify_all();
+        if (mWorker.joinable()) {
+            mWorker.join();
+        }
+        if (mHeld) {
+            releaseDspPower(mContext);
+        }
+    }
+    void begin() {
+        std::lock_guard<std::mutex> lock(mMutex);
+        mBusy++;
+        if (!mHeld) {
+            mHeld = acquireDspPower(mContext);
+            if (mHeld && !mWorker.joinable()) {
+                mWorker = std::thread([this]() { run(); });
+            }
+        }
+    }
+    void end() {
+        {
+            std::lock_guard<std::mutex> lock(mMutex);
+            mBusy--;
+            mLastUse = std::chrono::steady_clock::now();
+        }
+        mCond.notify_all();
+    }
+
+private:
+    void run() {
+        std::unique_lock<std::mutex> lock(mMutex);
+        while (!mStop) {
+            if (!mHeld || mBusy > 0) {
+                mCond.wait(lock);
+                continue;
+            }
+            auto deadline = mLastUse + std::chrono::milliseconds(kDspPowerIdleReleaseMs);
+            if (std::chrono::steady_clock::now() >= deadline) {
+                releaseDspPower(mContext);
+                mHeld = false;
+                continue;
+            }
+            mCond.wait_until(lock, deadline);
+        }
+    }
+
+    HexagonContext* mContext;
+    std::mutex mMutex;
+    std::condition_variable mCond;
+    std::thread mWorker;
+    std::chrono::steady_clock::time_point mLastUse;
+    int mBusy = 0;
+    bool mHeld = false;
+    bool mStop = false;
+};
+
 static bool acquireDspSession(HexagonContext* context) {
     std::lock_guard<std::mutex> lock(dspSessionMutex());
     if (context == nullptr || context->ops_dl_handle == nullptr) {
@@ -739,6 +811,40 @@ bool HexagonRuntime::hasPendingHexagonWrite(int fd, int offset, int size) const 
         const int64_t recordEnd = recordBegin + record.size;
         if (begin < recordEnd && recordBegin < end) {
             return true;
+        }
+    }
+    return false;
+}
+
+bool HexagonRuntime::pendingCommandTouches(int fd, int offset, int size) const {
+    if (fd < 0 || size <= 0 || mCommandGroup == nullptr) {
+        return false;
+    }
+    const int64_t begin = offset;
+    const int64_t end = begin + size;
+    for (int idx = 0; idx < mCommandGroupCount; ++idx) {
+        const int cmdFd = mCommandGroup->commands[idx * gCommandEntrySize];
+        const int cmdOffset = mCommandGroup->commands[idx * gCommandEntrySize + 1];
+        auto buffer = findDspBuffer(cmdFd);
+        if (buffer == nullptr || buffer->ptr == nullptr) {
+            // Cannot inspect it, so assume the worst.
+            return true;
+        }
+        auto command = flatbuffers::GetRoot<DSPCOMMAND::Command>((uint8_t*)buffer->ptr + cmdOffset);
+        for (auto tensors : {command->inputs(), command->outputs()}) {
+            if (tensors == nullptr) {
+                continue;
+            }
+            for (auto t : *tensors) {
+                if (t->fd() != fd) {
+                    continue;
+                }
+                const int64_t tBegin = t->offset();
+                const int64_t tEnd = tBegin + (t->size() > 0 ? t->size() : 1);
+                if (begin < tEnd && tBegin < end) {
+                    return true;
+                }
+            }
         }
     }
     return false;
@@ -944,7 +1050,13 @@ void HexagonRuntime::flushCommand() const {
         }
     }
     const int commandCount = mCommandGroupCount;
+#ifdef MNN_HEXAGON_APP_POWER_HOLD
+    if (mPowerKeeper) {
+        mPowerKeeper->begin();
+    }
+#else
     const bool powerAcquired = acquireDspPower(context);
+#endif
 #ifdef MNN_HEXAGON_ASAN
     const bool asanBeforeFlush = asanCheckAllBuffers("before flushCommand");
 #endif
@@ -1036,9 +1148,15 @@ void HexagonRuntime::flushCommand() const {
         MNN_ERROR("[Hexagon] execute_command_group function pointer is null! functions=%p\n", functions);
     }
 #endif
+#ifdef MNN_HEXAGON_APP_POWER_HOLD
+    if (mPowerKeeper) {
+        mPowerKeeper->end();
+    }
+#else
     if (powerAcquired) {
         releaseDspPower(context);
     }
+#endif
 #ifdef MNN_HEXAGON_ASAN
     asanCheckAllBuffers("after flushCommand");
 #endif
@@ -1087,10 +1205,19 @@ HexagonRuntime::HexagonRuntime(const Backend::Info& info) {
         return;
     }
     mAvailable = true;
+#ifdef MNN_HEXAGON_APP_POWER_HOLD
+    mPowerKeeper.reset(new PowerIdleKeeper(context));
+#endif
     std::shared_ptr<EagerBufferAllocator::Allocator> allocator(new HexagonAllocator());
     constexpr size_t staticMinAllocSize = 16 * 1024 * 1024;
     constexpr size_t commandMinAllocSize = 4 * 1024 * 1024;
-    constexpr size_t weightMinAllocSize = 16 * 1024 * 1024;
+    constexpr size_t weightMinAllocSize = 64 * 1024 * 1024;
+    // Each weight tensor is DMA'd to VTCM as one large block, so where it starts inside the chunk
+    // decides how many DSP MMU pages that block straddles. Measured on Qwen3.5-0.8B (v79, -rep 5,
+    // alternating): tg128 71.9 at 128 B, 74.4 at 4 KB, 75.6 at 64 KB; pp512 moves the same way but
+    // only by 0.6%. Keep it at a DSP large-page boundary; the padding is negligible next to the
+    // MB-sized tensors.
+    constexpr size_t weightAllocAlign = 64 * 1024;
     std::shared_ptr<BufferAllocator> staticAlloc(new EagerBufferAllocator(allocator, 128, staticMinAllocSize));
 #ifdef MNN_HEXAGON_ASAN
     staticAlloc = asanWrapAllocator(staticAlloc, "static");
@@ -1125,6 +1252,7 @@ HexagonRuntime::HexagonRuntime(const Backend::Info& info) {
         if (buf == nullptr) {
             MNN_ERROR("[Hexagon] failed to allocate HTP info buffer\n");
         } else {
+            ::memset((uint8_t*)buf->ptr + infoMem.second, 0, 256);
 #ifdef MNN_GPU_TIME_PROFILE
         int err = 0;
         {
@@ -1162,7 +1290,8 @@ HexagonRuntime::HexagonRuntime(const Backend::Info& info) {
             releaseDspPower(context);
         }
     }
-    std::shared_ptr<BufferAllocator> weightAlloc(new EagerBufferAllocator(allocator, 128, weightMinAllocSize));
+    std::shared_ptr<BufferAllocator> weightAlloc(
+        new EagerBufferAllocator(allocator, weightAllocAlign, weightMinAllocSize));
 #ifdef MNN_HEXAGON_ASAN
     weightAlloc = asanWrapAllocator(weightAlloc, "weight");
 #endif
@@ -1297,6 +1426,9 @@ HexagonRuntime::~HexagonRuntime() {
     mCommandAlloc.reset();
     mStaticAlloc.reset();
 
+#ifdef MNN_HEXAGON_APP_POWER_HOLD
+    mPowerKeeper.reset();
+#endif
     releaseDspSession(getContext());
 }
 
@@ -1335,9 +1467,14 @@ void HexagonRuntime::onGabageCollect(int level) {
     if (level >= 100 && mLazyWeightAlloc) {
         mLazyWeightAlloc->release(false);
     }
-    if (level >= 100) {
-        mDynamicBuffer.release();
-    }
+    // The shared dynamic pool root is deliberately NOT released here. The LLM engine runs a full
+    // gc after every prefill, and releasing the root made the next forward realloc it: once the
+    // decode phase had carved the freed chunk up for its own (much smaller) pool, prefill's
+    // realloc landed on a new base address, which re-pointed every dynamic tensor, forced a full
+    // command re-encode and left every DSP-side activation buffer cold (~5-7 ms per prefill
+    // measured on v81 Qwen3-0.6B pp512). The pool is sized max(prefill, decode) and is reused by
+    // both phases; it is released with the runtime. Keeping it trades that bounded residency for
+    // stable device addresses across prefill/decode switches.
 }
 
 bool HexagonRuntime::onCheckInfo(Backend::Info& info) const {

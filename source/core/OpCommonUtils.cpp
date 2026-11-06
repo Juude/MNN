@@ -47,20 +47,20 @@ Tensor::DimensionType OpCommonUtils::convertDimType(MNN_DATA_FORMAT dimensionFor
     return dimType;
 }
 
-void OpCommonUtils::loadBlobData(FileLoader* loader, const Op* op, char* ptr, int size) {
+bool OpCommonUtils::loadBlobData(FileLoader* loader, const Op* op, char* ptr, int size) {
     if (OpParameter_Blob != op->main_type()) {
-        return;
+        return false;
     }
     auto b       = op->main_as_Blob();
     if (USE_EXTERNAL_DATA(b)) {
         if (op->externalPath() != nullptr) {
             loader = new FileLoader(op->externalPath()->c_str());
         }
-        loadExternalDatas(loader, { ptr }, b->external()->data());
+        const bool loaded = loadExternalDatas(loader, {ptr}, b->external()->data());
         if (op->externalPath() != nullptr) {
             delete loader;
         }
-        return;
+        return loaded;
     }
     void* result = nullptr;
     switch (b->dataType()) {
@@ -85,6 +85,7 @@ void OpCommonUtils::loadBlobData(FileLoader* loader, const Op* op, char* ptr, in
             break;
     }
     ::memcpy(ptr, result, size);
+    return true;
 }
 
 static std::tuple<int, int, int> _split(int offset, int axisL, int area) {
@@ -497,6 +498,9 @@ bool OpCommonUtils::opCompabilityForLowp(const Op* op, int bytes) {
         case OpType_Deconvolution:
         case OpType_DeconvolutionDepthwise:
         case OpType_MatMul:
+#ifdef MNN_SUPPORT_TRANSFORMER_FUSE
+        case OpType_IndexedLinear:
+#endif
         case OpType_BatchMatMul:
         case OpType_BinaryOp:
         case OpType_Eltwise:
@@ -514,6 +518,8 @@ bool OpCommonUtils::opCompabilityForLowp(const Op* op, int bytes) {
         case OpType_DynamicQuant:
         case OpType_Attention:
         case OpType_LinearAttention:
+        case OpType_FusedLinear:
+        case OpType_RoPE:
         case OpType_LayerNorm:
         case OpType_Softmax:
         case OpType_Plugin:
@@ -538,6 +544,7 @@ static bool _RebuildExternalOp(FileLoader* external, const MNN::Op* origin, flat
     }
     builder.Clear();
     bool externalTmp = false;
+    bool loaded = true;
     if (nullptr != origin->externalPath()) {
         external = new FileLoader(origin->externalPath()->c_str());
         externalTmp = true;
@@ -556,13 +563,13 @@ static bool _RebuildExternalOp(FileLoader* external, const MNN::Op* origin, flat
             auto externalSize = scale->external()->size();
             int outputCount = static_cast<int>(externalInfo[1] / sizeof(float));
             std::vector<float> scaleData(outputCount);
-            external->offset(externalInfo[0]);
-            external->read((char*)scaleData.data(), externalInfo[1]);
+            loaded = loaded && external->offset(externalInfo[0]) == 0;
+            loaded = loaded && external->read((char*)scaleData.data(), externalInfo[1]);
             auto scaleFbb = builder.CreateVector(scaleData);
             flatbuffers::Offset<flatbuffers::Vector<float>> biasFbb = 0;
             if (externalSize > 2) {
                 std::vector<float> biasData(outputCount);
-                external->read((char*)biasData.data(), externalInfo[2]);
+                loaded = loaded && external->read((char*)biasData.data(), externalInfo[2]);
                 biasFbb = builder.CreateVector(biasData);
             }
             ScaleBuilder builder_(builder);
@@ -580,9 +587,9 @@ static bool _RebuildExternalOp(FileLoader* external, const MNN::Op* origin, flat
             int32_t size = static_cast<int32_t>(externalInfo[1]);
             std::vector<float> gamma(size / sizeof(float));
             std::vector<float> beta(size / sizeof(float));
-            external->offset(externalInfo[0]);
-            external->read((char*)gamma.data(), externalInfo[1]);
-            external->read((char*)beta.data(), externalInfo[2]);
+            loaded = loaded && external->offset(externalInfo[0]) == 0;
+            loaded = loaded && external->read((char*)gamma.data(), externalInfo[1]);
+            loaded = loaded && external->read((char*)beta.data(), externalInfo[2]);
             flatbuffers::Offset<flatbuffers::Vector<int>> axisFbb = 0;
             if (nullptr != layer_norm_param->axis()) {
                 std::vector<int> axis(layer_norm_param->axis()->size());
@@ -609,22 +616,24 @@ static bool _RebuildExternalOp(FileLoader* external, const MNN::Op* origin, flat
                 bool isSparse = param->sparseParameter.get() != nullptr;
                 bool isPTQ = param->quanParameter->scaleIn != 0;
                 if (isSparse || isPTQ) {
-                    external->offset(param->external[0]);
+                    loaded = loaded && external->offset(param->external[0]) == 0;
                     if (0 != param->external[1]) {
                         param->quanParameter->buffer.resize(param->external[1]);
-                        external->read((char*)param->quanParameter->buffer.data(), param->external[1]);
+                        loaded =
+                            loaded && external->read((char*)param->quanParameter->buffer.data(), param->external[1]);
                     }
                     param->quanParameter->alpha.resize(param->external[2] / sizeof(float));
-                    external->read((char*)param->quanParameter->alpha.data(), param->external[2]);
+                    loaded = loaded && external->read((char*)param->quanParameter->alpha.data(), param->external[2]);
                 } else {
                     // skip weight and dequant alpha for load speed
                     externalPathFbb = builder.CreateString(external->path());
-                    external->offset(param->external[0] + param->external[1] + param->external[2]);
                 }
                 if (param->bias.empty() && param->external.size() > 3) {
 		            if (param->external[3] > 0) {
                        param->bias.resize(param->external[3]/sizeof(float));
-                       external->read((char*)param->bias.data(), param->external[3]);
+                       loaded = loaded &&
+                                external->offset(param->external[0] + param->external[1] + param->external[2]) == 0;
+                       loaded = loaded && external->read((char*)param->bias.data(), param->external[3]);
                     } else {
                        param->bias.resize(param->common->outputCount);
 		            }
@@ -632,7 +641,10 @@ static bool _RebuildExternalOp(FileLoader* external, const MNN::Op* origin, flat
                 if (param->quanParameter->index.empty() && param->external.size() > 4) {
                     if (param->external[4] > 0) {
                         param->quanParameter->index.resize(param->external[4]/sizeof(uint32_t));
-                        external->read((char*)param->quanParameter->index.data(), param->external[4]);
+                        loaded = loaded && external->offset(param->external[0] + param->external[1] +
+                                                            param->external[2] + param->external[3]) == 0;
+                        loaded =
+                            loaded && external->read((char*)param->quanParameter->index.data(), param->external[4]);
                     }
                 }
             } else {
@@ -641,12 +653,23 @@ static bool _RebuildExternalOp(FileLoader* external, const MNN::Op* origin, flat
                 param->quanParameter->type = 8;
                 externalPathFbb = builder.CreateString(external->path());
                 param->bias.resize(param->external[2] / sizeof(float));
-                external->offset(param->external[0] + param->external[1]);
-                external->read((char*)param->bias.data(), param->external[2]);
+                loaded = loaded && external->offset(param->external[0] + param->external[1]) == 0;
+                loaded = loaded && external->read((char*)param->bias.data(), param->external[2]);
             }
             parameterMain = Convolution2D::Pack(builder, param.get()).Union();
             break;
         }
+#ifdef MNN_SUPPORT_TRANSFORMER_FUSE
+        case OpParameter_IndexedLinearParam:
+        {
+            // Keep expert weights external; IndexedLinearCommon reads each bank
+            // member once when constructing the backend's shared static resource.
+            externalPathFbb = builder.CreateString(external->path());
+            std::unique_ptr<IndexedLinearParamT> param(origin->main_as_IndexedLinearParam()->UnPack());
+            parameterMain = IndexedLinearParam::Pack(builder, param.get()).Union();
+            break;
+        }
+#endif
         case OpParameter_FusedLinearParam:
         {
 #ifdef MNN_SUPPORT_TRANSFORMER_FUSE
@@ -659,23 +682,25 @@ static bool _RebuildExternalOp(FileLoader* external, const MNN::Op* origin, flat
                     bool isSparse = conv->sparseParameter.get() != nullptr;
                     bool isPTQ = conv->quanParameter->scaleIn != 0;
                     if (isSparse || isPTQ) {
-                        external->offset(conv->external[0]);
+                        loaded = loaded && external->offset(conv->external[0]) == 0;
                         if (0 != conv->external[1]) {
                             conv->quanParameter->buffer.resize(conv->external[1]);
-                            external->read((char*)conv->quanParameter->buffer.data(), conv->external[1]);
+                            loaded =
+                                loaded && external->read((char*)conv->quanParameter->buffer.data(), conv->external[1]);
                         }
                         conv->quanParameter->alpha.resize(conv->external[2] / sizeof(float));
-                        external->read((char*)conv->quanParameter->alpha.data(), conv->external[2]);
+                        loaded = loaded && external->read((char*)conv->quanParameter->alpha.data(), conv->external[2]);
                     } else {
                         // skip weight and dequant alpha for load speed; member convs read
                         // them through the externalPath stamped on the rebuilt op
                         externalPathFbb = builder.CreateString(external->path());
-                        external->offset(conv->external[0] + conv->external[1] + conv->external[2]);
                     }
                     if (conv->bias.empty() && conv->external.size() > 3) {
                         if (conv->external[3] > 0) {
                             conv->bias.resize(conv->external[3] / sizeof(float));
-                            external->read((char*)conv->bias.data(), conv->external[3]);
+                            loaded = loaded &&
+                                     external->offset(conv->external[0] + conv->external[1] + conv->external[2]) == 0;
+                            loaded = loaded && external->read((char*)conv->bias.data(), conv->external[3]);
                         } else {
                             conv->bias.resize(conv->common->outputCount);
                         }
@@ -683,7 +708,10 @@ static bool _RebuildExternalOp(FileLoader* external, const MNN::Op* origin, flat
                     if (conv->quanParameter->index.empty() && conv->external.size() > 4) {
                         if (conv->external[4] > 0) {
                             conv->quanParameter->index.resize(conv->external[4] / sizeof(uint32_t));
-                            external->read((char*)conv->quanParameter->index.data(), conv->external[4]);
+                            loaded = loaded && external->offset(conv->external[0] + conv->external[1] +
+                                                                conv->external[2] + conv->external[3]) == 0;
+                            loaded =
+                                loaded && external->read((char*)conv->quanParameter->index.data(), conv->external[4]);
                         }
                     }
                 } else {
@@ -691,16 +719,16 @@ static bool _RebuildExternalOp(FileLoader* external, const MNN::Op* origin, flat
                     conv->quanParameter->type = 8;
                     externalPathFbb = builder.CreateString(external->path());
                     conv->bias.resize(conv->external[2] / sizeof(float));
-                    external->offset(conv->external[0] + conv->external[1]);
-                    external->read((char*)conv->bias.data(), conv->external[2]);
+                    loaded = loaded && external->offset(conv->external[0] + conv->external[1]) == 0;
+                    loaded = loaded && external->read((char*)conv->bias.data(), conv->external[2]);
                 }
             }
             if (param->ln && param->ln->external.size() >= 3) {
-                external->offset(param->ln->external[0]);
+                loaded = loaded && external->offset(param->ln->external[0]) == 0;
                 param->ln->gamma.resize(param->ln->external[1] / sizeof(float));
-                external->read((char*)param->ln->gamma.data(), param->ln->external[1]);
+                loaded = loaded && external->read((char*)param->ln->gamma.data(), param->ln->external[1]);
                 param->ln->beta.resize(param->ln->external[2] / sizeof(float));
-                external->read((char*)param->ln->beta.data(), param->ln->external[2]);
+                loaded = loaded && external->read((char*)param->ln->beta.data(), param->ln->external[2]);
                 param->ln->external.clear();
             }
             parameterMain = FusedLinearParam::Pack(builder, param.get()).Union();
@@ -713,6 +741,8 @@ static bool _RebuildExternalOp(FileLoader* external, const MNN::Op* origin, flat
     if (externalTmp) {
         delete external;
     }
+    if (!loaded)
+        return false;
     OpBuilder builder_(builder);
     builder_.add_name(opNameFbb);
     builder_.add_externalPath(externalPathFbb);
@@ -739,6 +769,21 @@ Execution* OpCommonUtils::createExecutionWithExternal(Backend* backend, const st
         case OpParameter_LayerNorm:
             hasExternal = USE_EXTERNAL_DATA(op->main_as_LayerNorm());
             break;
+#ifdef MNN_SUPPORT_TRANSFORMER_FUSE
+        case OpParameter_IndexedLinearParam:
+        {
+            auto param = op->main_as_IndexedLinearParam();
+            if (param->linears()) {
+                for (auto linear : *param->linears()) {
+                    if (USE_EXTERNAL_DATA(linear)) {
+                        hasExternal = true;
+                        break;
+                    }
+                }
+            }
+            break;
+        }
+#endif
         case OpParameter_FusedLinearParam:
         {
 #ifdef MNN_SUPPORT_TRANSFORMER_FUSE
@@ -770,7 +815,11 @@ Execution* OpCommonUtils::createExecutionWithExternal(Backend* backend, const st
         usemmap = (backend->getRuntime()->hint().useCachedMmap > 1);
     }
     Execution* execution;
-    if ((!usemmap)) {
+    bool rebuildExternal = !usemmap;
+#ifdef MNN_SUPPORT_TRANSFORMER_FUSE
+    rebuildExternal = rebuildExternal || op->type() == OpType_IndexedLinear;
+#endif
+    if (rebuildExternal) {
         bool res = _RebuildExternalOp(externalFile, op, builder);
         if (!res) {
             MNN_ERROR("Rebuild External Op failed\n");
@@ -800,6 +849,10 @@ Execution* OpCommonUtils::createExecutionWithExternal(Backend* backend, const st
         }
     }
 #ifdef MNN_SUPPORT_TRANSFORMER_FUSE
+    if (op->main_type() == OpParameter_IndexedLinearParam) {
+        tmpstore.reset(new BufferStorage);
+        tmpstore->storage = builder.ReleaseRaw(tmpstore->allocated_size, tmpstore->offset);
+    }
     else if (op->main_type() == OpParameter_FusedLinearParam && !usemmap) {
         // The fused-proj composite reads the rebuilt op (externalPath, member conv
         // tables, inlined ln gamma) during onResize; keep the builder storage alive.
@@ -811,11 +864,14 @@ Execution* OpCommonUtils::createExecutionWithExternal(Backend* backend, const st
 #endif
 }
 
-void OpCommonUtils::loadExternalDatas(FileLoader* fileloader, std::vector<char*> addrs,  const int64_t* external) {
-    fileloader->offset(external[0]);
+bool OpCommonUtils::loadExternalDatas(FileLoader* fileloader, std::vector<char*> addrs, const int64_t* external) {
+    if (!fileloader || fileloader->offset(external[0]) != 0)
+        return false;
     for (int i = 0; i < addrs.size(); i++) {
-        fileloader->read(addrs[i], external[i+1]);
+        if (!fileloader->read(addrs[i], external[i + 1]))
+            return false;
     }
+    return true;
 }
 
 static void getBatchChannelArea(const Tensor* t, int& batch, int& channel, int& area) {
@@ -1044,7 +1100,8 @@ bool OpCommonUtils::gatedRMSNormFusable(const Op* op, const std::vector<Tensor*>
 }
 
 bool OpCommonUtils::gatedRMSNormOpenCLOk(const Op* op, const std::vector<Tensor*>& inputs,
-                                         const std::vector<Tensor*>& outputs, int* outside, int* inside, int* heads) {
+                                         const std::vector<Tensor*>& outputs, int* outside, int* inside, int* heads,
+                                         bool externalGammaOk) {
     if (nullptr == op || inputs.size() != 2 || outputs.size() != 1) {
         return false;
     }
@@ -1058,12 +1115,18 @@ bool OpCommonUtils::gatedRMSNormOpenCLOk(const Op* op, const std::vector<Tensor*
     // The loader inlines converter-folded gamma / beta before the creator runs;
     // the kernels bind the pair or neither, so anything left external is out.
     const bool hasGamma = (nullptr != param->gamma() && nullptr != param->beta());
+    // External gamma / beta ([offset, gammaBytes, betaBytes]), inlined as a pair before the creator runs.
+    int64_t externalGammaBytes = 0;
     if (!hasGamma) {
         if ((nullptr != param->gamma()) != (nullptr != param->beta())) {
             return false;
         }
         if (nullptr != param->external() && param->external()->size() > 1 && param->external()->data()[1] > 0) {
-            return false;
+            if (!externalGammaOk || param->external()->size() < 3 ||
+                param->external()->data()[2] != param->external()->data()[1]) {
+                return false;
+            }
+            externalGammaBytes = param->external()->data()[1];
         }
     }
     auto x = inputs[0];
@@ -1089,6 +1152,9 @@ bool OpCommonUtils::gatedRMSNormOpenCLOk(const Op* op, const std::vector<Tensor*
         return false;
     }
     if (hasGamma && ((int)param->gamma()->size() != insideSize || (int)param->beta()->size() != insideSize)) {
+        return false;
+    }
+    if (externalGammaBytes > 0 && externalGammaBytes != (int64_t)insideSize * (int64_t)sizeof(float)) {
         return false;
     }
     // x is [outside, inside] with the head as batch axis; z / out are

@@ -1143,6 +1143,8 @@ public:
                     {4}, {4}, scale, zeros, _CoshInt8);
     }
 };
+// Metal has no erf / erfc / erfinv kernel, so on Metal these run on the CPU fallback with a float
+// input, which must ignore tableInt8.
 class ErfTestInt8 : public UnaryTestCommon {
 public:
     virtual ~ErfTestInt8() = default;

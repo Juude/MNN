@@ -14,9 +14,15 @@ set(MNN_HEXAGON_SRCS
 
 add_library(MNN_Hexagon OBJECT ${MNN_HEXAGON_SRCS})
 
-target_compile_definitions(MNN_Hexagon PRIVATE -DMNN_HEXAGON_ENABLED=1)
+# MNN_HEXAGON_ENABLED is a global add_definitions in the root CMakeLists (the geometry needs it too).
 if (MNN_HEXAGON_ASAN)
     target_compile_definitions(MNN_Hexagon PRIVATE -DMNN_HEXAGON_ASAN=1)
+endif()
+# App-only: holding the DSP power vote between command flushes matters for untrusted app processes;
+# for command line tools the original per-flush acquire/release is kept. Off by default. Only the
+# .cpp behavior is guarded, so the class layout (and thus the header) is identical either way.
+if (MNN_HEXAGON_APP_POWER_HOLD)
+    target_compile_definitions(MNN_Hexagon PRIVATE -DMNN_HEXAGON_APP_POWER_HOLD=1)
 endif()
 if (CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64" OR ANDROID_ABI STREQUAL "arm64-v8a")
     set_source_files_properties(
